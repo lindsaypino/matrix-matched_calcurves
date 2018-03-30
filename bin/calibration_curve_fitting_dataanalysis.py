@@ -1,6 +1,6 @@
 # ### Background.
 # 
-# I have developed and tested a piecewise linear model for sparse calibration curve data.
+# I have developed and tested a PI_linearecewise linear model for sparse calibration curve data.
 # The model consists of two regimes: the noise regime and the linear regime.
 # Because label-free DIA calibration curve data is so sparse (70% zeroes) and considering
 # the canonical shape of a calibration curve, the noise regime is initialized with a
@@ -10,16 +10,20 @@
 # and creates plots to visualize the model fits and intersection value.
 #
 
+import pandas as pd
 import os
 import sys
-import argparse
-import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import scipy
 from scipy.optimize import curve_fit
+from scipy import stats
+from tqdm import tqdm
+from matplotlib.ticker import ScalarFormatter
 
 
 # detect whether the file is Enyclopedia output or Skyline report, then read it in appropriately
+## TODO: incorporate an optional multiplier file
 def read_input(filename, col_conc_map_file):
 
     header_line = open(filename, 'r').readline()
@@ -32,7 +36,7 @@ def read_input(filename, col_conc_map_file):
         df = pd.read_table(filename, sep=None, engine="python")
 
         # (map back to proteins later if necessary)
-        #protpep_map = df[['Protein', 'Peptide']]
+        #protpep_map = df[['Protein', 'peptide']]
 
         # make a quantitative dataframe with just the curve points and the peptides
         df = df.drop(['numFragments', 'Protein'], 1)
@@ -40,28 +44,46 @@ def read_input(filename, col_conc_map_file):
         # read in the filename-to-concentration map
         col_conc_map = pd.read_csv(col_conc_map_file, sep=',', engine="python")
 
-        # add a mapping to preserve the peptide column
-        if 'Peptide' not in col_conc_map:
-            col_conc_map.loc[len(col_conc_map) + 1] = ['Peptide', 'Peptide']
+        # add a mapPI_linearng to preserve the peptide column
+        ## i definitely fucked this up
+        '''if 'peptide' not in col_conc_map:
+            col_conc_map.loc[len(col_conc_map) + 1] = ['peptide', 'peptide']'''
 
         # map the filenames to concentrations
         df = df.rename(columns=col_conc_map.set_index('filename')['concentration'])
 
         # melt the dataframe down
-        df_melted = pd.melt(df, id_vars=['Peptide'])
+        df_melted = pd.melt(df, id_vars=['peptide'])
         df_melted.columns = ['peptide', 'curvepoint', 'area']
 
         # convert the curve points to numbers so that they sort correctly
         df_melted['curvepoint'] = pd.to_numeric(df_melted['curvepoint'])
 
     else:
-        sys.stdout.write("Input identified as Skyline export filetype. Not supported (yet!)\n")
-        return -1 # exit out for now since I haven't built this for Skyline files yet
-        #df = pd.read_csv(filename, engine='python')
+        sys.stdout.write("Input identified as Skyline export filetype. \n")
+
+        # read in the table
+        df_melted = pd.read_csv(filename, sep=None, engine="python")
+
+        ##################################################
+        ## TODO clean up the dataset-specific stuff below
+        # remove replicates 4 and 5 from the curve data
+        df_melted = df_melted[df_melted['replicate'] < 4]
+        # for now, remove all peptides for which there isn't a ghaemma protein coPI_lineares per cell value
+        df_melted = df_melted.loc[-df_melted['ghaemma_protein_cpc'].isnull()]
+        ##################################################
+
+        ## TODO: REQUIRE COLUMN NAMING SCHEME
+        df_melted.rename(columns={'curvepoint_cpc':'curvepoint'}, inplace=True)
+        df_melted.rename(columns={'tic_normalized_area': 'area'}, inplace=True)
+        df_melted.rename(columns={'precursor': 'peptide'}, inplace=True)
+
+        # convert the curve points to numbers so that they sort correctly
+        df_melted['curvepoint'] = pd.to_numeric(df_melted['curvepoint'])
 
     return df_melted
 
-# define each of the linear segments and do a piecewise fit
+# define each of the linear segments and do a PI_linearecewise fit
 def two_lines(x, a, b, c, d):
 
     # slope of the noise (a) should be zero
@@ -116,6 +138,10 @@ def initialize_noiseintercept(subsetdf):
 
     # find the top point and second-top point of the curve
     conc_list = list(pd.to_numeric(subsetdf['curvepoint'].drop_duplicates()))
+
+    #if not min(conc_list):
+    #    print subsetdf['peptide'].drop_duplicates()
+
     bottom_point = min(conc_list)
 
     # find the y intercept using this slope (b = y-mx) and the top point
@@ -124,12 +150,26 @@ def initialize_noiseintercept(subsetdf):
     return intercept
 
 
+def fit_one_segment(x, slope, intercept):
+    segment = slope * x + intercept
+    return segment
+
+def add_line_to_plot(slope, intercept, setstyle='-', setcolor='k'):
+    """Plot a line from slope and intercept"""
+    axes = plt.gca()
+    x_vals = np.array(axes.get_xlim())
+    y_vals = intercept + slope * x_vals
+    plt.plot(x_vals, y_vals, linestyle=setstyle, color=setcolor)
+
+
+
 # set the project directory to the current directory
 project_dir = os.getcwd()
 
 # parse args?
+'''
 parser = argparse.ArgumentParser(
-    description="A piecewise linear model for calibration curve data.",
+    description="A PI_linearecewise linear model for calibration curve data.",
     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 parser.add_argument('curve_data', type=str,
@@ -141,44 +181,42 @@ parser.add_argument('--plot', default=True, type=bool,
                     help='create individual calibration curve plots for each peptide')
 
 parser.parse_args()
+'''
 
 # read in the command line arguments
 #raw_file = sys.argv[1]
 #col_conc_map_file = sys.argv[2]
 
-'''
-project_dir = "G:/My Drive/00_UW_GS/proj/CalibratedQuant_DIA-MS/csf/"
-raw_file = os.path.join(project_dir,
-                        "data/20180112_CSFCurves_quant.elib.peptides.txt")
+project_dir = "G:/My Drive/00_UW_GS/proj/CalibratedQuant_DIA-MS/data/"
+raw_file =  os.path.join(project_dir,
+                         "../results/20170901_yeastcalcurve_skylinequant_cleaned.csv")
 col_conc_map_file = os.path.join(project_dir,
-                                 "data/20180112_CSFCurves_map.csv")
-'''
+                                 "filename2samplegroup_map.csv")
 
 # read in the data
 quant_df_melted = read_input(raw_file, col_conc_map_file)
 
-# sort the dataframe with x values in strictly ascending order.
-quant_df_melted = quant_df_melted.sort_values(by='curvepoint', ascending=True)
 
-### loop over all the peptides
+##
+## ITERATE OVER PEPTIDES
+##
 
 # initialize empty data frame to store results
-peptidecrossover = pd.DataFrame(columns=['peptide', 'LOD'])
-
-# initialize a counter for sanity
-counter = 1
-
+peptidecrossover = pd.DataFrame(columns=['peptide', 'LOD', 'LOQ'])
+peptide_nan = 0
 # and awwaayyyyy we go~
-for peptide in quant_df_melted['peptide'].unique():
-
-    # print a small sanity-check counter to know whether the code's running or not
-    if counter % len(quant_df_melted['peptide'].unique()) == 0:
-        pctprogress = ((counter * 1.00) / (len(quant_df_melted['peptide'].unique()) * 1.00)) * 100.00
-        sys.stderr.write('progress: %.2f \n' % round(pctprogress, 2))
-    counter += 1
+for peptide in tqdm(quant_df_melted['peptide'].unique()):
 
     # subset the dataframe for that peptide
     subset = quant_df_melted.loc[(quant_df_melted['peptide'] == peptide)]
+
+    # if the peptide is nan, skip it and move on to the next peptide
+    if subset.empty:
+        peptide_nan += 1
+        continue
+
+    # sort the dataframe with x values in strictly ascending order.
+    subset = subset.sort_values(by='curvepoint', ascending=True)
 
     # create the x and y arrays
     x = np.array(subset['curvepoint'], dtype=float)
@@ -189,56 +227,157 @@ for peptide in quant_df_melted['peptide'].unique():
     subset['curvepoint'] = subset['curvepoint'].astype(str)
 
     # use non-linear least squares to fit the two functions (noise and linear) to data.
+    # pw vector = (m_noise, b_noise, m_linear, b_linear)
     pw0 = (0, initialize_noiseintercept(subset),
            initialize_slope(subset), initialize_linearintercept(subset))
 
-    try:
-        pw, cov = curve_fit(two_lines, x, y, pw0)
+    # try:  # I think I can take this exception handling out? idk, check if there's 'no fit' I guess
+    pw, cov = curve_fit(two_lines, x, y, pw0)
+    slope_noise = pw[0]
+    intercept_noise = pw[1]
+    slope_linear = pw[2]
+    intercept_linear = pw[3]
 
-        # find the crossover point, defined by the intersection of the noise and linear regime
-        crossover = (pw[3] - pw[1]) / (pw[0] - pw[2])
+    # find the crossover point, defined by the intersection of the noise and linear regime
+    crossover = (intercept_linear - intercept_noise) / (slope_noise - slope_linear)
+
+    # if the crossover point is greater than the top point of the curve or is a negative number,
+    # then replace it with a value (Inf or NaN) indicating such
+    if crossover > max(x):
+        crossover = float('Inf')
+    elif crossover < 0:
+        crossover = float('nan')
+
+    ##
+    ## PREDICTION BAND
+    ##
+
+    # subset the subset for just the linear regime
+    subset_noise = subset.loc[(subset['curvepoint'].astype(float) < crossover)]
+    subset_linear = subset.loc[(subset['curvepoint'].astype(float) >= crossover)]
+
+    # if there is no linear portion, just set intersect_PI_linear to infinite
+    if not subset_linear.size:
+        intersect_PI_linear = float('Inf')
+        x2_linear = np.nan
+        y2_linear = np.nan
+        PI_linear = np.nan
+
+    else:
+        x_linear = np.array(subset_linear['curvepoint'], dtype=float)
+        y_linear = np.array(subset_linear['area'], dtype=float)
+
+        x_noise = np.array(subset_noise['curvepoint'], dtype=float)
+        y_noise = np.array(subset_noise['area'], dtype=float)
+
+        # calculate model statistics
+        n = y_linear.size  # number of observations in the linear range
+        m = pw.size / 2  # number of parameters (half of which are linear range)
+        DF = n - m  # degrees of freedom
+        t = scipy.stats.t.ppf(0.95, n - m)  # used for CI and PI_linear bands
+
+        pred_y_linear = fit_one_segment(x_linear, slope_linear, intercept_linear)
+        pred_y_noise = fit_one_segment(x_noise, slope_noise, intercept_noise)
+
+        # estimate the error in the data/model
+        resid_linear = y_linear - pred_y_linear
+        s_err_linear = np.sqrt(np.sum(resid_linear ** 2) / (DF))  # standard deviation of the error
+        resid_noise = y_noise - pred_y_noise
+        s_err_noise = np.sqrt(np.sum(resid_noise ** 2) / (DF))
+
+        # draw the prediction intervals using a range of x and y values
+        x2_linear = np.linspace(crossover, np.max(x), 100)
+        y2_linear = np.linspace(np.min(pred_y_linear), np.max(pred_y_linear), 100)
+        PI_linear = max(t * s_err_linear * np.sqrt(
+            1 + 1 / n + (x2_linear - np.mean(x_linear)) ** 2 / np.sum((x_linear - np.mean(x_linear)) ** 2)))
+        x2_noise = np.linspace(np.min(x), crossover, 100)
+        y2_noise = np.linspace(np.min(pred_y_noise), np.max(pred_y_noise), 100)
+        PI_noise = max(t * s_err_noise * np.sqrt(
+            1 + 1 / n + (x2_noise - np.mean(x_noise)) ** 2 / np.sum((x_noise - np.mean(x_noise)) ** 2)))
+
+        # find the intersection of the lower PI_linear and the upper PI_noise
+        intersect_PI_linear = (intercept_linear - intercept_noise - PI_linear - PI_noise) / (slope_noise - slope_linear)
 
         # if the crossover point is greater than the top point of the curve or is a negative number,
         # then replace it with a value (Inf or NaN) indicating such
-        if crossover > max(x):
-            crossover = float('Inf')
-        elif crossover < 0:
-            crossover = float('nan')
+        if intersect_PI_linear > max(x):
+            intersect_PI_linear = float('Inf')
+        elif intersect_PI_linear < 0:
+            intersect_PI_linear = float('nan')
 
-        # make a plot of the curve points and the fit, in both linear and log space
-        plt.figure(figsize=(10, 5))
+    ##
+    ## PRETTY PLOTS
+    ##
 
-        # left side: plot the linear scale
-        plt.subplot(1, 2, 1)
-        plt.plot(x, y, 'o', x, two_lines(x, *pw), '-')
-        plt.axvline(x=crossover, color='r')
-        plt.title(peptide)
-        plt.figtext(0.1, 0.87, crossover, wrap=True, fontsize=12)
-        plt.xlabel("curve point")
-        plt.ylabel("area")
-        # right side: plot exact same thing but with log scaled x axis
-        plt.subplot(1, 2, 2)
-        plt.plot(x, y, 'o', x, two_lines(x, *pw), '-')
-        plt.axvline(x=crossover, color='r')
-        plt.xscale('log')
-        plt.title(peptide)
-        plt.figtext(0.6, 0.87, crossover, wrap=True, fontsize=12)
-        plt.xlabel("curve point (log-space)")
-        plt.ylabel("area")
-        # clean up the borders with '*.tight_layout()' and save the plot under the peptide's name
-        plt.tight_layout()
-        plt.savefig(('C:/Users/Lindsay/Desktop/scratch/' + peptide + '.png'))
-        plt.close()
+    # make a plot of the curve points and the fit, in both linear and log space
+    plt.figure(figsize=(10, 5))
 
-    except:
-        sys.stderr.write("Peptide %s could not be fit." % peptide)
-        crossover = 'no fit'
+    # left hand plot: linear scale x axis
+    plt.subplot(1, 2, 1)
+    plt.plot(x, y, 'o')
+    add_line_to_plot(slope_noise, intercept_noise, '-', 'g')
+    add_line_to_plot(slope_linear, intercept_linear, '-', 'g')
+    plt.axvline(x=crossover, color='m', label=('LOD= %.3e' % crossover))
+    plt.axvline(x=intersect_PI_linear, color='c', label=('LOQ= %.3e' % intersect_PI_linear))
+    plt.title(peptide)
+    plt.xlabel("curve point")
+    plt.ylabel("area")
+
+    # force axis ticks to be scientific notation so the plot is prettier
+    ## TEST
+    # plt.ticklabel_format(style='sci', axis='x')
+    # returns  AttributeError: This method only works with the ScalarFormatter.
+    ##
+
+    # Add the prediction intervals on the left hand plot
+    add_line_to_plot(slope_noise, intercept_noise + PI_noise, '--', setcolor='0.5')
+    add_line_to_plot(slope_noise, intercept_noise - PI_noise, '--', setcolor='0.5')
+    add_line_to_plot(slope_linear, intercept_linear + PI_linear, '--', setcolor='0.5')
+    add_line_to_plot(slope_linear, intercept_linear - PI_linear, '--', setcolor='0.5')
+
+    # right hand plot: log scale x axis
+    plt.subplot(1, 2, 2)
+    plt.plot(x, y, 'o')
+    add_line_to_plot(slope_noise, intercept_noise, '-', 'g')
+    add_line_to_plot(slope_linear, intercept_linear, '-', 'g')
+    plt.axvline(x=crossover, color='m', label=('LOD= %.3e' % crossover))
+    plt.axvline(x=intersect_PI_linear, color='c', label=('LOQ= %.3e' % intersect_PI_linear))
+
+    # Add the prediction intervals on the left hand plot
+    add_line_to_plot(slope_noise, intercept_noise + PI_noise, '--', setcolor='0.5')
+    add_line_to_plot(slope_noise, intercept_noise - PI_noise, '--', setcolor='0.5')
+    add_line_to_plot(slope_linear, intercept_linear + PI_linear, '--', setcolor='0.5')
+    add_line_to_plot(slope_linear, intercept_linear - PI_linear, '--', setcolor='0.5')
+
+    plt.xscale('log')
+    plt.title(peptide)
+    plt.xlabel("curve point (log-space)")
+    plt.ylabel("area")
+
+    # force axis ticks to be scientific notation so the plot is prettier
+    ## TEST
+    # plt.ticklabel_format(style='sci', axis='x')
+    # returns  AttributeError: This method only works with the ScalarFormatter.
+    ##
+
+    # add legend with LOD and LOQ values
+    legend = plt.legend(loc=9, bbox_to_anchor=(0, -0.21, 1., .102), ncol=2)
+
+    # clean up the borders with '*.tight_layout()' and save  ## *.tight_layout() cuts off the legend
+    # plt.tight_layout()
+    plt.savefig(('C:/Users/linds/Desktop/scratch/' + peptide + '.png'),
+                bbox_extra_artists=(legend,), bbox_inches='tight')
+    plt.close()
+
+    # except:
+    #    sys.stderr.write("peptide %s could not be fit." % peptide)
+    #    crossover = 'no fit'
+    #    intersect_PI_linear = 'no fit'
 
     # make a dataframe row with the peptide and it's crossover point
-    new_row = [peptide, crossover]
-    new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD'])
+    new_row = [peptide, crossover, intersect_PI_linear]
+    new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ'])
     peptidecrossover = peptidecrossover.append(new_df_row)
 
-peptidecrossover.to_csv(path_or_buf='C:/Users/Lindsay/Desktop/scratch/figuresofmerit.csv', index=False)
-
-
+peptidecrossover.to_csv(path_or_buf='C:/Users/linds/Desktop/scratch/figuresofmerit.csv', index=False)
+print "fyi: there were ", peptide_nan, "NaN peptides in the data"
