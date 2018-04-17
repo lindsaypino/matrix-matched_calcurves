@@ -155,11 +155,15 @@ def fit_one_segment(x, slope, intercept):
     return segment
 
 # plot a line given a slope and intercept
-def add_line_to_plot(slope, intercept, setstyle='-', setcolor='k'):
+def add_line_to_plot(slope, intercept, scale, setstyle='-', setcolor='k'):
     axes = plt.gca()
-    x_vals = np.array(axes.get_xlim())
+    xlims = np.array(axes.get_xlim())
+    x_vals = np.arange(xlims[0],xlims[1],((xlims[1]-xlims[0])/100))
     y_vals = intercept + slope * x_vals
-    plt.plot(x_vals, y_vals, linestyle=setstyle, color=setcolor)
+    if scale == 'semilogx':
+        plt.semilogx(x_vals, y_vals, linestyle=setstyle, color=setcolor)
+    else:
+        plt.plot(x_vals, y_vals, linestyle=setstyle, color=setcolor)
 
 
 
@@ -345,12 +349,13 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     # make a plot of the curve points and the fit, in both linear and log space
     plt.figure(figsize=(10, 5))
 
-    # left hand plot: linear scale x axis
+    ###
+    ### left hand plot: linear scale x axis
     plt.subplot(1, 2, 1)
-    plt.plot(x, y, 'o')
-    add_line_to_plot(slope_noise, intercept_noise, '-', 'g')
-    if slope_linear > 0:
-        add_line_to_plot(slope_linear, intercept_linear, '-', 'g')
+    plt.plot(x, y, 'o')  # scatterplot of the data
+    add_line_to_plot(slope_noise, intercept_noise, 'linear', '-', 'g')  # add noise segment line
+    if slope_linear > 0:  # add linear segment line
+        add_line_to_plot(slope_linear, intercept_linear, 'linear', '-', 'g')
     plt.axvline(x=crossover, color='m', label=('LOD= %.3e' % crossover))
     plt.axvline(x=intersect_PI_linear, color='c', label=('LOQ= %.3e' % intersect_PI_linear))
     plt.title(peptide)
@@ -362,34 +367,35 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     # plt.ticklabel_format(style='sci', axis='x')
     # returns  AttributeError: This method only works with the ScalarFormatter.
     ####################
-    #if not np.isnan(PI_noise):
+    # if not np.isnan(PI_noise):
     # Add the prediction intervals on the left hand plot
-    add_line_to_plot(slope_noise, intercept_noise + PI_noise, '--', setcolor='0.5')
-    add_line_to_plot(slope_noise, intercept_noise - PI_noise, '--', setcolor='0.5')
-    #if not np.isnan(PI_linear):
-    add_line_to_plot(slope_linear, intercept_linear + PI_linear, '--', setcolor='0.5')
-    add_line_to_plot(slope_linear, intercept_linear - PI_linear, '--', setcolor='0.5')
+    add_line_to_plot(slope_noise, intercept_noise + PI_noise, 'linear', '--', setcolor='0.5')
+    add_line_to_plot(slope_noise, intercept_noise - PI_noise, 'linear', '--', setcolor='0.5')
+    # if not np.isnan(PI_linear):
+    add_line_to_plot(slope_linear, intercept_linear + PI_linear, 'linear', '--', setcolor='0.5')
+    add_line_to_plot(slope_linear, intercept_linear - PI_linear, 'linear', '--', setcolor='0.5')
 
-    # right hand plot: log scale x axis
+    ###
+    ### right hand plot: log scale x axis (semilog x)
     plt.subplot(1, 2, 2)
-    plt.plot(x, y, 'o')
-    add_line_to_plot(slope_noise, intercept_noise, '-', 'g')
+    plt.semilogx(x, y, 'o')
+    add_line_to_plot(slope_noise, intercept_noise, 'semilogx', '-', 'g')
     if slope_linear > 0:
-        add_line_to_plot(slope_linear, intercept_linear, '-', 'g')
+        add_line_to_plot(slope_linear, intercept_linear, 'semilogx', '-', 'g')
     plt.axvline(x=crossover, color='m', label=('LOD= %.3e' % crossover))
     plt.axvline(x=intersect_PI_linear, color='c', label=('LOQ= %.3e' % intersect_PI_linear))
 
-    #if not np.isnan(PI_noise):
-    # Add the prediction intervals on the left hand plot
-    add_line_to_plot(slope_noise, intercept_noise + PI_noise, '--', setcolor='0.5')
-    add_line_to_plot(slope_noise, intercept_noise - PI_noise, '--', setcolor='0.5')
-    #if not np.isnan(PI_linear):
-    add_line_to_plot(slope_linear, intercept_linear + PI_linear, '--', setcolor='0.5')
-    add_line_to_plot(slope_linear, intercept_linear - PI_linear, '--', setcolor='0.5')
+    # if not np.isnan(PI_noise):
+    # Add the prediction intervals on the right hand plot
+    add_line_to_plot(slope_noise, intercept_noise + PI_noise, 'semilogx', '--', setcolor='0.5')
+    add_line_to_plot(slope_noise, intercept_noise - PI_noise, 'semilogx', '--', setcolor='0.5')
+    # if not np.isnan(PI_linear):
+    add_line_to_plot(slope_linear, intercept_linear + PI_linear, 'semilogx', '--', setcolor='0.5')
+    add_line_to_plot(slope_linear, intercept_linear - PI_linear, 'semilogx', '--', setcolor='0.5')
 
-    plt.xscale('log')
+    # plt.xscale('log')
     plt.title(peptide)
-    plt.xlabel("curve point (log-space)")
+    plt.xlabel("curve point (log10)")
     plt.ylabel("area")
 
     # force axis ticks to be scientific notation so the plot is prettier
@@ -402,7 +408,7 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     legend = plt.legend(loc=9, bbox_to_anchor=(0, -0.21, 1., .102), ncol=2)
 
     # save the figure
-    plt.savefig(('C:/Users/Lindsay/Desktop/scratch/' + peptide + '.png'),
+    plt.savefig(('C:/Users/linds/Desktop/scratch/' + peptide + '.png'),
                 bbox_extra_artists=(legend,), bbox_inches='tight')
     plt.close()
 
@@ -411,5 +417,5 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ'])
     peptidecrossover = peptidecrossover.append(new_df_row)
 
-peptidecrossover.to_csv(path_or_buf='C:/Users/Lindsay/Desktop/scratch/figuresofmerit.csv', index=False)
+peptidecrossover.to_csv(path_or_buf='C:/Users/linds/Desktop/scratch/figuresofmerit.csv', index=False)
 print "fyi: there were ", peptide_nan, "NaN peptides in the data"
