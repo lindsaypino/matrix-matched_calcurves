@@ -23,7 +23,7 @@ from matplotlib.ticker import ScalarFormatter
 import argparse
 
 
-# detect whether the file is Enyclopedia output or Skyline report, then read it in appropriately
+# detect whether the file is Encyclopedia output or Skyline report, then read it in appropriately
 ## TODO: incorporate an optional multiplier file
 def read_input(filename, col_conc_map_file):
 
@@ -33,123 +33,66 @@ def read_input(filename, col_conc_map_file):
     if 'numFragments' in header_line:
         sys.stdout.write("Input identified as EncyclopeDIA *.elib.peptides.txt filetype.\n")
 
-        # read in the table
-        df = pd.read_table(filename, sep=None, engine="python")
+        df = pd.read_table(filename, sep=None, engine="python")  # read in the table
+        df = df.drop(['numFragments', 'Protein'], 1)  # make a quantitative df with just curve points and peptides
 
-        # (map back to proteins later if necessary)
-        #protpep_map = df[['Protein', 'peptide']]
-
-        # make a quantitative dataframe with just the curve points and the peptides
-        df = df.drop(['numFragments', 'Protein'], 1)
-
-        # read in the filename-to-concentration map
+        # map the filenames to concentrations and clean up column names
         col_conc_map = pd.read_csv(col_conc_map_file, sep=',', engine="python")
-
-        # add a mapping to preserve the peptide column
-        ## i definitely fucked this up
-        '''if 'peptide' not in col_conc_map:
-            col_conc_map.loc[len(col_conc_map) + 1] = ['peptide', 'peptide']'''
-
-        # map the filenames to concentrations
         df = df.rename(columns=col_conc_map.set_index('filename')['concentration'])
-
-        # rename the peptide column
-        df = df.rename(columns={'Peptide': 'peptide'})
-
-        # melt the dataframe down
-        df_melted = pd.melt(df, id_vars=['peptide'])
+        df = df.rename(columns={'Peptide': 'peptide'})  # rename the peptide column
+        df_melted = pd.melt(df, id_vars=['peptide'])  # melt the dataframe down
         df_melted.columns = ['peptide', 'curvepoint', 'area']
-
-        # convert the curve points to numbers so that they sort correctly
-        df_melted['curvepoint'] = pd.to_numeric(df_melted['curvepoint'])
 
     else:
         sys.stdout.write("Input identified as Skyline export filetype. \n")
 
-        # read in the table
-        df_melted = pd.read_csv(filename, sep=None, engine="python")
+        df_melted = pd.read_csv(filename, sep=None, engine="python")  # read in the table
 
-        ##################################################
-        ## TODO clean up the dataset-specific stuff below
-        # remove replicates 4 and 5 from the curve data
-        df_melted = df_melted[df_melted['Replicate'] < 4]
-        # for now, remove all peptides for which there isn't a ghaemma protein coPI_lineares per cell value
-        #df_melted = df_melted.loc[-df_melted['ghaemma_protein_cpc'].isnull()]
-        ##################################################
-
-        ## TODO: REQUIRE COLUMN NAMING SCHEME
+        ## TODO: REQUIRE COLUMN NAMING SCHEME (SampleGroup, Total Area Fragment, Peptide Sequence)
         df_melted.rename(columns={'SampleGroup':'curvepoint'}, inplace=True)
         df_melted.rename(columns={'Total Area Fragment': 'area'}, inplace=True)
         df_melted.rename(columns={'Peptide Sequence': 'peptide'}, inplace=True)
 
         df_melted['area'].fillna(0, inplace=True)  # replace NA with 0
 
-        # convert the curve points to numbers so that they sort correctly
-        df_melted['curvepoint'] = pd.to_numeric(df_melted['curvepoint'])
+    # convert the curve points to numbers so that they sort correctly
+    df_melted['curvepoint'] = pd.to_numeric(df_melted['curvepoint'])
 
     return df_melted
 
-# define each of the linear segments and do a PI_linearecewise fit
+# define each of the linear segments and do a piecewise fit
 def two_lines(x, a, b, c, d):
 
-    # slope of the noise (a) should be zero
-    a = 0
+    a = 0  # slope of the noise (a) should be zero
     noise = a * x + b
     linear = c * x + d
     return np.maximum(noise, linear)
 
-# find the slope between the top two points
-def initialize_slope(subsetdf):
+# establish initial model fitting parameters based on the data
+def initialize_params(subsetdf):
 
-    # find the mean response area for each curve point
-    mean_y = subsetdf.groupby('curvepoint')['area'].mean()
+    mean_y = subsetdf.groupby('curvepoint')['area'].mean()  # find the mean response area for each curve point
 
-    # find the top point and second-top point of the curve
+    # find the top point, second-top point, and bottom points of the curve data
     conc_list = list(pd.to_numeric(subsetdf['curvepoint'].drop_duplicates()))
     top_point = max(conc_list)
     conc_list.remove(top_point)
     second_top = max(conc_list)
-
-    # using the means, calculate a slope (y1-y2/x1-x2)
-    slope = (mean_y[str(second_top)] - mean_y[str(top_point)]) / (second_top - top_point)
-    return slope
-
-# find the y-intercept of the linear regime based on the top two points of the curve
-def initialize_linearintercept(subsetdf):
-
-    # find the mean response area for each curve point
-    mean_y = subsetdf.groupby('curvepoint')['area'].mean()
-
-    # find the top point and second-top point of the curve
-    conc_list = list(pd.to_numeric(subsetdf['curvepoint'].drop_duplicates()))
-    top_point = max(conc_list)
-    conc_list.remove(top_point)
-    second_top = max(conc_list)
-
-    # using the means, calculate a slope (y1-y2/x1-x2)
-    slope = (mean_y[str(second_top)] - mean_y[str(top_point)]) / (second_top - top_point)
-
-    # find the y intercept using this slope (b = y-mx) and the top point
-    intercept = mean_y[str(top_point)] - (slope * top_point)
-    return intercept
-
-# find the y-intercept of the noise regime based on the bottom point of the curve
-def initialize_noiseintercept(subsetdf):
-
-    # find the mean response area for each curve point
-    mean_y = subsetdf.groupby('curvepoint')['area'].mean()
-
-    # find the top point and second-top point of the curve
-    conc_list = list(pd.to_numeric(subsetdf['curvepoint'].drop_duplicates()))
-
-    #if not min(conc_list):
-    #    print subsetdf['peptide'].drop_duplicates()
-
     bottom_point = min(conc_list)
 
-    # find the y intercept using this slope (b = y-mx) and the top point
-    intercept = mean_y[str(bottom_point)] - (0 * bottom_point)
-    return intercept
+    # assume that slope of the noise will be zero
+    noise_slope = 0
+
+    # using the means, calculate a slope (y1-y2/x1-x2)
+    linear_slope = (mean_y[str(second_top)] - mean_y[str(top_point)]) / (second_top - top_point)
+
+    # find the y1 intercept using noise_slope=0 and the bottom point
+    noise_intercept = mean_y[str(bottom_point)] - (noise_slope * bottom_point)
+
+    # find the y2 intercept using linear slope (b = y-mx) and the top point
+    linear_intercept = mean_y[str(top_point)] - (linear_slope * top_point)
+
+    return noise_slope, noise_intercept, linear_slope, linear_intercept
 
 # fit just a first degree polynomial
 def fit_one_segment(x, slope, intercept):
@@ -167,7 +110,34 @@ def add_line_to_plot(slope, intercept, scale, setstyle='-', setcolor='k'):
     else:
         plt.plot(x_vals, y_vals, linestyle=setstyle, color=setcolor)
 
+def determine_prediction_interval(df, crossover, slope, intercept, num_params):
 
+    # if there's no data for this segment, don't bother with a prediction interval
+    if not df.size:
+        pred_int = np.nan
+
+    else:
+        x = np.array(df['curvepoint'], dtype=float)
+        y = np.array(df['area'], dtype=float)
+
+        # calculate model statistics
+        n_obs = y.size  # number of observations in the linear range
+        #num_params = pw.size / 2  # number of parameters (half of which are linear range)
+        deg_freedom = n_obs - num_params  # degrees of freedom
+        t = scipy.stats.t.ppf(0.95, n_obs - num_params)  # used for CI and PI_linear bands
+
+        pred_y = fit_one_segment(x, slope, intercept)
+
+        # estimate the error in the data/model
+        resid = y - pred_y
+        s_err = np.sqrt(np.sum(resid ** 2) / (deg_freedom))  # standard deviation of the error
+
+        # draw the prediction intervals using a range of x and y values
+        x2 = np.linspace(crossover, np.max(x), 100)
+        pred_int = max(t * s_err * np.sqrt(
+            1 + 1 / n_obs + (x2 - np.mean(x)) ** 2 / np.sum((x - np.mean(x)) ** 2)))
+
+    return pred_int
 
 # set the project directory to the current directory
 project_dir = os.getcwd()
@@ -179,7 +149,8 @@ parser = argparse.ArgumentParser(
     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 parser.add_argument('curve_data', type=str,
-                    help='a matrix containing peptides and their quantitative values across each curve point')
+                    help='a matrix containing peptides and their quantitative values across each curve point (currently'
+                         ' supporting Encyclopedia *.elib.peptides.txt quant reports and Skyline export reports)')
 parser.add_argument('filename_concentration_map', type=str,
                     help='a comma-delimited file containing maps between filenames and the concentration point '
                          'they represent')
@@ -193,16 +164,7 @@ parser.parse_args()
 raw_file = sys.argv[1]
 col_conc_map_file = sys.argv[2]
 
-'''
-project_dir = "G:/My Drive/00_UW_GS/proj/CalibratedQuant_DIA-MS/data/"
-raw_file =  os.path.join(project_dir,
-                         "../results/20170901_yeastcalcurve_skylinequant_cleaned.csv")
-col_conc_map_file = os.path.join(project_dir,
-                                 "filename2samplegroup_map.csv")'''
-
-# read in the data
-quant_df_melted = read_input(raw_file, col_conc_map_file)
-
+quant_df_melted = read_input(raw_file, col_conc_map_file)  # read in the data
 
 ##
 ## ITERATE OVER PEPTIDES
@@ -214,49 +176,45 @@ peptide_nan = 0
 
 # and awwaayyyyy we go~
 for peptide in tqdm(quant_df_melted['peptide'].unique()):
-#for peptide in ['FTPTSNFGQSIIK_2']:
 
-    # subset the dataframe for that peptide
-    subset = quant_df_melted.loc[(quant_df_melted['peptide'] == peptide)]
+    subset = quant_df_melted.loc[(quant_df_melted['peptide'] == peptide)]  # subset the dataframe for that peptide
 
-    # if the peptide is nan, skip it and move on to the next peptide
-    if subset.empty:
+    if subset.empty:  # if the peptide is nan, skip it and move on to the next peptide
         peptide_nan += 1
         continue
 
-    # sort the dataframe with x values in strictly ascending order.
+    # sort the dataframe with x values in strictly ascending order
     subset = subset.sort_values(by='curvepoint', ascending=True)
 
     # create the x and y arrays
     x = np.array(subset['curvepoint'], dtype=float)
     y = np.array(subset['area'], dtype=float)
 
-    # back to string
     ## TODO REPLACE WITH .iloc
-    subset['curvepoint'] = subset['curvepoint'].astype(str)
+    subset['curvepoint'] = subset['curvepoint'].astype(str)  # back to string
 
     # use non-linear least squares to fit the two functions (noise and linear) to data.
-    # pw vector = (m_noise, b_noise, m_linear, b_linear)
-    pw0 = (0, initialize_noiseintercept(subset),
-           initialize_slope(subset), initialize_linearintercept(subset))
-
-    try:  # I think I can take this exception handling out? idk, check if there's 'no fit' I guess
-        pw, cov = curve_fit(two_lines, x, y, pw0)
-        slope_noise = pw[0]
-        intercept_noise = pw[1]
-        slope_linear = pw[2]
-        intercept_linear = pw[3]
-    except:
+    try:
+        model_parameters, cov = curve_fit(two_lines, x, y, initialize_params(subset))
+        slope_noise = model_parameters[0]
+        intercept_noise = model_parameters[1]
+        slope_linear = model_parameters[2]
+        intercept_linear = model_parameters[3]
+    except:  # catch for when a peptide can't be fit for whatever reason
         sys.stderr.write("Peptide %s could not be curve_fit." % peptide)
         slope_noise = np.nan
         intercept_noise = np.nan
         slope_linear = np.nan
         intercept_linear = np.nan
 
+    ##
+    ## DETERMINE LOD FROM PIECEWISE MODEL
+    ##
+
+    # find the crossover point of the piecewise fit, defined by the intersection of the noise and linear regime
     if slope_linear < 0:
         crossover = float('Inf')
     else:
-        # find the crossover point, defined by the intersection of the noise and linear regime
         crossover = (intercept_linear - intercept_noise) / (slope_noise - slope_linear)
 
     # if the crossover point is greater than the top point of the curve or is a negative number,
@@ -270,68 +228,13 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     ## PREDICTION BAND
     ##
 
-    ## NOISE SEGMENT PREDICTION BAND
-    subset_noise = subset.loc[(subset['curvepoint'].astype(float) < crossover)]
-    # if there is no noise portion, just set intersect_PI_linear to negative infinite
-    if not subset_noise.size:
-        intersect_PI_linear = float('-Inf')
-        x2_noise = np.nan
-        y2_noise = np.nan
-        PI_noise = np.nan
-    else:
-        x_noise = np.array(subset_noise['curvepoint'], dtype=float)
-        y_noise = np.array(subset_noise['area'], dtype=float)
-
-        # calculate model statistics
-        n = y_noise.size  # number of observations in the linear range
-        m = pw.size / 2  # number of parameters (half of which are linear range)
-        DF = n - m  # degrees of freedom
-        t = scipy.stats.t.ppf(0.95, n - m)  # used for CI and PI_linear bands
-
-        pred_y_noise = fit_one_segment(x_noise, slope_noise, intercept_noise)
-
-        # estimate the error in the data/model
-        resid_noise = y_noise - pred_y_noise
-        s_err_noise = np.sqrt(np.sum(resid_noise ** 2) / (DF))  # standard deviation of the error
-
-        # draw the prediction intervals using a range of x and y values
-        x2_noise = np.linspace(np.min(x), crossover, 100)
-        y2_noise = np.linspace(np.min(pred_y_noise), np.max(pred_y_noise), 100)
-        PI_noise = max(t * s_err_noise * np.sqrt(
-            1 + 1 / n + (x2_noise - np.mean(x_noise)) ** 2 / np.sum((x_noise - np.mean(x_noise)) ** 2)))
-
-    ## LINEAR SEGMENT PREDICTION BAND
-    subset_linear = subset.loc[(subset['curvepoint'].astype(float) >= crossover)]
-    # if there is no linear portion, just set intersect_PI_linear to infinite
-    if not subset_linear.size:
-        intersect_PI_linear = float('Inf')
-        x2_linear = np.nan
-        y2_linear = np.nan
-        PI_linear = np.nan
-    else:
-        x_linear = np.array(subset_linear['curvepoint'], dtype=float)
-        y_linear = np.array(subset_linear['area'], dtype=float)
-
-        # calculate model statistics
-        n = y_linear.size  # number of observations in the linear range
-        m = pw.size / 2  # number of parameters (half of which are linear range)
-        DF = n - m  # degrees of freedom
-        t = scipy.stats.t.ppf(0.95, n - m)  # used for CI and PI_linear bands
-
-        pred_y_linear = fit_one_segment(x_linear, slope_linear, intercept_linear)
-
-        # estimate the error in the data/model
-        resid_linear = y_linear - pred_y_linear
-        s_err_linear = np.sqrt(np.sum(resid_linear ** 2) / (DF))  # standard deviation of the error
-
-        # draw the prediction intervals using a range of x and y values
-        x2_linear = np.linspace(crossover, np.max(x), 100)
-        y2_linear = np.linspace(np.min(pred_y_linear), np.max(pred_y_linear), 100)
-        PI_linear = max(t * s_err_linear * np.sqrt(
-            1 + 1 / n + (x2_linear - np.mean(x_linear)) ** 2 / np.sum((x_linear - np.mean(x_linear)) ** 2)))
+    PI_noise = determine_prediction_interval(subset.loc[(subset['curvepoint'].astype(float) < crossover)],
+                                             crossover, slope_noise, intercept_noise, (model_parameters.size / 2))
+    PI_linear = determine_prediction_interval(subset.loc[(subset['curvepoint'].astype(float) >= crossover)],
+                                              crossover, slope_linear, intercept_linear, (model_parameters.size / 2))
 
     ##
-    ## LOQ BY PREDICTION BAND & PIECEWISE LINEAR MODEL INTERSECTIONS
+    ## LOQ BY PIECEWISE PREDICTION INTERVAL INTERSECTIONS
     ##
 
     # find the intersection of the lower PI_linear and the upper PI_noise
