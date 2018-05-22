@@ -72,15 +72,17 @@ def read_input(filename, col_conc_map_file):
         ##################################################
         ## TODO clean up the dataset-specific stuff below
         # remove replicates 4 and 5 from the curve data
-        df_melted = df_melted[df_melted['replicate'] < 4]
+        df_melted = df_melted[df_melted['Replicate'] < 4]
         # for now, remove all peptides for which there isn't a ghaemma protein coPI_lineares per cell value
-        df_melted = df_melted.loc[-df_melted['ghaemma_protein_cpc'].isnull()]
+        #df_melted = df_melted.loc[-df_melted['ghaemma_protein_cpc'].isnull()]
         ##################################################
 
         ## TODO: REQUIRE COLUMN NAMING SCHEME
-        df_melted.rename(columns={'curvepoint_cpc':'curvepoint'}, inplace=True)
-        df_melted.rename(columns={'tic_normalized_area': 'area'}, inplace=True)
-        df_melted.rename(columns={'precursor': 'peptide'}, inplace=True)
+        df_melted.rename(columns={'SampleGroup':'curvepoint'}, inplace=True)
+        df_melted.rename(columns={'Total Area Fragment': 'area'}, inplace=True)
+        df_melted.rename(columns={'Peptide Sequence': 'peptide'}, inplace=True)
+
+        df_melted['area'].fillna(0, inplace=True)  # replace NA with 0
 
         # convert the curve points to numbers so that they sort correctly
         df_melted['curvepoint'] = pd.to_numeric(df_melted['curvepoint'])
@@ -408,7 +410,7 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     legend = plt.legend(loc=9, bbox_to_anchor=(0, -0.21, 1., .102), ncol=2)
 
     # save the figure
-    plt.savefig(('C:/Users/linds/Desktop/scratch/' + peptide + '.png'),
+    plt.savefig(('C:/Users/lpino/Desktop/scratch/' + peptide + '.png'),
                 bbox_extra_artists=(legend,), bbox_inches='tight')
     plt.close()
 
@@ -417,5 +419,5 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ'])
     peptidecrossover = peptidecrossover.append(new_df_row)
 
-peptidecrossover.to_csv(path_or_buf='C:/Users/linds/Desktop/scratch/figuresofmerit.csv', index=False)
+peptidecrossover.to_csv(path_or_buf='C:/Users/lpino/Desktop/scratch/figuresofmerit.csv', index=False)
 print "fyi: there were ", peptide_nan, "NaN peptides in the data"
