@@ -25,7 +25,7 @@ import argparse
 
 # detect whether the file is Encyclopedia output or Skyline report, then read it in appropriately
 def read_input(filename, col_conc_map_file):
-    # TODO: incorporate an optional multiplier file [peptide, multiplier]
+
     header_line = open(filename, 'r').readline()
 
     # if numFragments is a column, it's an Encyclopedia file
@@ -55,6 +55,18 @@ def read_input(filename, col_conc_map_file):
     df_melted['curvepoint'] = pd.to_numeric(df_melted['curvepoint'])
 
     return df_melted
+
+# associates a multiplier value to the curvepoint a la single-point calibration
+def associate_multiplier(df, multiplier_file):
+    mutliplier_df = pd.read_csv(multiplier_file, sep=None, engine="python")  # read in the multiplier file
+
+    # merge the multiplier with the data frame
+    merged_df = pd.merge(df, mutliplier_df, on="peptide", how="inner")
+    merged_df['curvepoint_multiplied'] = merged_df['curvepoint'] * merged_df['multiplier']
+    multiplied_df = merged_df[['peptide', 'curvepoint_multiplied', 'area']]
+    multiplied_df.columns = ['peptide', 'curvepoint', 'area']
+
+    return multiplied_df
 
 # define each of the linear segments and do a piecewise fit
 def two_lines(x, a, b, c, d):
@@ -231,6 +243,8 @@ if __name__ == "__main__":
     parser.add_argument('filename_concentration_map', type=str,
                         help='a comma-delimited file containing maps between filenames and the concentration point \
                                 they represent (two columns named "filename" and "concentration")')
+    parser.add_argument('--multiplier_file', type=str,
+                        help='use a single-point multiplier associated with the curve data peptides')
     parser.add_argument('--output_path', default=os.getcwd(), type=str,
                         help='specify an output path for figures of merit and plots (default=current directory)')
     parser.add_argument('--plot', default=True, type=bool,
@@ -240,10 +254,16 @@ if __name__ == "__main__":
     args = parser.parse_args()
     raw_file = args.curve_data
     col_conc_map_file = args.filename_concentration_map
+    multiplier_file = args.multiplier_file
     output_dir = args.output_path
+    plot_or_not = args.plot
 
     # read in the data
     quant_df_melted = read_input(raw_file, col_conc_map_file)
+
+    # associate multiplier with the curvepoint ratio (if there is a multiplier provided)
+    if multiplier_file:
+        quant_df_melted = associate_multiplier(quant_df_melted, multiplier_file)
 
     # initialize empty data frame to store results
     peptidecrossover = pd.DataFrame(columns=['peptide', 'LOD', 'LOQ'])
@@ -294,8 +314,9 @@ if __name__ == "__main__":
         # find the intersection of the lower PI_linear and the upper PI_noise
         LOQ = calculate_LOQ(intercept_noise, intercept_linear, slope_noise, slope_linear, x)
 
-        # make a plot of the curve points and the fit, in both linear and log space
-        build_plots(x, y, intercept_noise, slope_noise, intercept_linear, slope_linear, LOD, LOQ)
+        if plot_or_not == True:
+            # make a plot of the curve points and the fit, in both linear and log space
+            build_plots(x, y, intercept_noise, slope_noise, intercept_linear, slope_linear, LOD, LOQ)
 
         # make a dataframe row with the peptide and its crossover point
         new_row = [peptide, LOD, LOQ]
