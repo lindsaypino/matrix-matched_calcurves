@@ -19,7 +19,6 @@ import scipy
 from scipy.optimize import curve_fit
 from scipy import stats
 from tqdm import tqdm
-from matplotlib.ticker import ScalarFormatter
 import argparse
 
 
@@ -168,6 +167,7 @@ def add_line_to_plot(slope, intercept, scale, setstyle='-', setcolor='k'):
 def build_plots(x, y, intercept_noise, slope_noise, intercept_linear, slope_linear, crossover, intersect_PI_linear):
     # MAGIC MATPLOTLIB BELOW. NO TOUCH.
     plt.figure(figsize=(10, 5))
+    plt.suptitle(peptide, fontsize="large")
 
     ###
     ### left hand plot: linear scale x axis
@@ -179,20 +179,20 @@ def build_plots(x, y, intercept_noise, slope_noise, intercept_linear, slope_line
     plt.axvline(x=crossover, color='m', label=('LOD= %.3e' % crossover))
     plt.axvline(x=intersect_PI_linear, color='c', label=('LOQ= %.3e' % intersect_PI_linear))
 
-    plt.title(peptide)
+    #plt.title(peptide, y=1.08)
     plt.xlabel("curve point")
     plt.ylabel("area")
 
     # force axis ticks to be scientific notation so the plot is prettier
-    ####### TEST #######
-    # plt.ticklabel_format(style='sci', axis='x')
-    # returns  AttributeError: This method only works with the ScalarFormatter.
-    ####################
+    plt.ticklabel_format(style='sci', axis='both', scilimits=(0,0))
+
     # Add the prediction intervals on the left hand plot
     add_line_to_plot(slope_noise, intercept_noise + PI_noise, 'linear', '--', setcolor='0.5')
     add_line_to_plot(slope_noise, intercept_noise - PI_noise, 'linear', '--', setcolor='0.5')
     add_line_to_plot(slope_linear, intercept_linear + PI_linear, 'linear', '--', setcolor='0.5')
     add_line_to_plot(slope_linear, intercept_linear - PI_linear, 'linear', '--', setcolor='0.5')
+
+    #plt.ylim(ymin=(intercept_noise - (PI_noise+0.25*PI_noise)), ymax=(max(y)+max(y)*0.05))
 
     ###
     ### right hand plot: log scale x axis (semilog x)
@@ -204,28 +204,27 @@ def build_plots(x, y, intercept_noise, slope_noise, intercept_linear, slope_line
     plt.axvline(x=crossover, color='m', label=('LOD= %.3e' % crossover))
     plt.axvline(x=intersect_PI_linear, color='c', label=('LOQ= %.3e' % intersect_PI_linear))
 
+    #plt.title(peptide, y=1.08)
+    plt.xlabel("curve point (log10)")
+    plt.ylabel("area")
+
+    # force y axis ticks to be scientific notation so the plot is prettier (x is already semilog)
+    plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0))
+
     # Add the prediction intervals on the right hand plot
     add_line_to_plot(slope_noise, intercept_noise + PI_noise, 'semilogx', '--', setcolor='0.5')
     add_line_to_plot(slope_noise, intercept_noise - PI_noise, 'semilogx', '--', setcolor='0.5')
     add_line_to_plot(slope_linear, intercept_linear + PI_linear, 'semilogx', '--', setcolor='0.5')
     add_line_to_plot(slope_linear, intercept_linear - PI_linear, 'semilogx', '--', setcolor='0.5')
 
-    plt.title(peptide)
-    plt.xlabel("curve point (log10)")
-    plt.ylabel("area")
-
-    # force axis ticks to be scientific notation so the plot is prettier
-    ## TEST
-    # plt.ticklabel_format(style='sci', axis='x')
-    # returns  AttributeError: This method only works with the ScalarFormatter.
-    ##
+    #plt.ylim(ymin=(intercept_noise - (PI_noise+0.25*PI_noise)), ymax=(max(y)+max(y)*0.05))
 
     # add legend with LOD and LOQ values
     legend = plt.legend(loc=9, bbox_to_anchor=(0, -0.21, 1., .102), ncol=2)
 
     # save the figure
     plt.savefig(os.path.join(output_dir, peptide + '.png'),
-                bbox_extra_artists=(legend,), bbox_inches='tight')
+                bbox_extra_artists=(legend,), bbox_inches='tight', pad_inches=0.25)
     plt.close()
 
 if __name__ == "__main__":
@@ -247,8 +246,8 @@ if __name__ == "__main__":
                         help='use a single-point multiplier associated with the curve data peptides')
     parser.add_argument('--output_path', default=os.getcwd(), type=str,
                         help='specify an output path for figures of merit and plots (default=current directory)')
-    parser.add_argument('--plot', default=True, type=bool,
-                        help='create individual calibration curve plots for each peptide (default=True)')
+    parser.add_argument('--plot', default='y', type=str,
+                        help='yes/no (y/n) to create individual calibration curve plots for each peptide (default=y)')
 
     # parse arguments from command line
     args = parser.parse_args()
@@ -314,7 +313,7 @@ if __name__ == "__main__":
         # find the intersection of the lower PI_linear and the upper PI_noise
         LOQ = calculate_LOQ(intercept_noise, intercept_linear, slope_noise, slope_linear, x)
 
-        if plot_or_not == True:
+        if plot_or_not == 'y':
             # make a plot of the curve points and the fit, in both linear and log space
             build_plots(x, y, intercept_noise, slope_noise, intercept_linear, slope_linear, LOD, LOQ)
 
