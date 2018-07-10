@@ -103,17 +103,27 @@ def initialize_params(subsetdf):
     return noise_slope, noise_intercept, linear_slope, linear_intercept
 
 # determine the maximum prediction band (unweighted)
-def max_prediction_interval(df, crossover, slope, intercept, num_params):
-    if not df.size:  # if there's no data for this segment, don't bother with a prediction interval
+def max_prediction_interval(df, LOD, slope, intercept, num_params, segment):
+
+    if segment == 'noise':
+        subset_df = df.loc[(df['curvepoint'].astype(float) < LOD)]
+    elif segment == 'linear':
+        subset_df = df.loc[(df['curvepoint'].astype(float) > LOD)]
+    #else:
+        #sys.stderr.write("max_prediction_interval segment parameter not set correctly")
+
+    if not subset_df.size:  # if there's no data for this segment, don't bother with a prediction interval
         pred_int = np.nan
+        #sys.stderr.write("Peptide %s has no %s segment.\n" % (df['peptide'].unique(), segment))
+
     else:
-        x = np.array(df['curvepoint'], dtype=float)
-        y = np.array(df['area'], dtype=float)
+        x = np.array(subset_df['curvepoint'], dtype=float)
+        y = np.array(subset_df['area'], dtype=float)
 
         # calculate model statistics
-        n_obs = y.size  # number of observations in the linear range
+        n_obs = y.size  # number of observations in the segment
         deg_freedom = n_obs - num_params  # degrees of freedom
-        t = scipy.stats.t.ppf(0.95, n_obs - num_params)  # used for CI and PI_linear bands
+        t = scipy.stats.t.ppf(0.95, deg_freedom)  # used for confidence/prediction bands
 
         pred_y = fit_one_segment(x, slope, intercept)
 
@@ -121,10 +131,9 @@ def max_prediction_interval(df, crossover, slope, intercept, num_params):
         resid = y - pred_y
         s_err = np.sqrt(np.sum(resid ** 2) / deg_freedom)  # standard deviation of the error
 
-        # draw the prediction intervals using a range of x and y values
-        x2 = np.linspace(crossover, np.max(x), 100)
-        pred_int = max(t * s_err * np.sqrt(
-            1 + 1 / n_obs + (x2 - np.mean(x)) ** 2 / np.sum((x - np.mean(x)) ** 2)))
+        # determine the prediction interval
+        pred_int = max(t * s_err * np.sqrt((1+(1/n_obs)+(x-np.mean(x))**2)/np.sum((x-np.mean(x))**2)))
+
     return pred_int
 
 # find the crossover point of the piecewise fit, defined by the intersection of the noise and linear regime
@@ -142,8 +151,8 @@ def calculate_LOD(b_noise, b_linear, m_noise, m_linear, x):
     return LOD
 
 # find the intersection of the lower PI_linear and the upper PI_noise
-def calculate_LOQ(b_noise, b_linear, m_noise, m_linear, x):
-    LOQ = (intercept_linear - intercept_noise - PI_linear - PI_noise) / (slope_noise - slope_linear)
+def calculate_LOQ(b_noise, b_linear, m_noise, m_linear, pi_noise, pi_linear, x):
+    LOQ = (b_linear - b_noise - pi_linear - pi_noise) / (m_noise - m_linear)
 
     # consider some special edge cases
     if LOQ > max(x):  # if the crossover point is greater than the top point of the curve or is a negative number,
@@ -305,13 +314,13 @@ if __name__ == "__main__":
         LOD = calculate_LOD(intercept_noise, intercept_linear, slope_noise, slope_linear, x)
 
         # calculate prediction intervals
-        PI_noise = max_prediction_interval(subset.loc[(subset['curvepoint'].astype(float) < LOD)],
-                                                 LOD, slope_noise, intercept_noise, (model_parameters.size / 2))
-        PI_linear = max_prediction_interval(subset.loc[(subset['curvepoint'].astype(float) >= LOD)],
-                                                  LOD, slope_linear, intercept_linear, (model_parameters.size / 2))
+        PI_noise = max_prediction_interval(subset, LOD, slope_noise, intercept_noise,
+                                           (model_parameters.size / 2), 'noise')
+        PI_linear = max_prediction_interval(subset, LOD, slope_linear, intercept_linear,
+                                            (model_parameters.size / 2), 'linear')
 
         # find the intersection of the lower PI_linear and the upper PI_noise
-        LOQ = calculate_LOQ(intercept_noise, intercept_linear, slope_noise, slope_linear, x)
+        LOQ = calculate_LOQ(intercept_noise, intercept_linear, slope_noise, slope_linear, PI_noise, PI_linear, x)
 
         if plot_or_not == 'y':
             # make a plot of the curve points and the fit, in both linear and log space
