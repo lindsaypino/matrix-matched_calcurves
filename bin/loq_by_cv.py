@@ -179,6 +179,10 @@ def make_plot(df):
     ax1.axvline(x=loq, color='c', label=('LOQ= %.3e' % loq))
     ax3.axvline(x=loq, color='c', label=('LOQ= %.3e' % loq))
 
+    # force axis ticks to be scientific notation so the plot is prettier
+    ax0.ticklabel_format(style='sci', axis='both', scilimits=(0,0))
+    ax2.ticklabel_format(style='sci', axis='y', scilimits=(0,0))
+
     # add legend with LOD and LOQ values
     legend = plt.legend(loc=9, bbox_to_anchor=(0, -0.21, 1., .102), ncol=2)
 

@@ -42,13 +42,25 @@ def read_input(filename, col_conc_map_file):
     else:
         sys.stdout.write("Input identified as Skyline export filetype. \n")
 
-        df_melted = pd.read_csv(filename, sep=None, engine="python")  # read in the csv
-        # TODO: REQUIRE COLUMN NAMING SCHEME (SampleGroup, Total Area Fragment, Peptide Sequence)
-        df_melted.rename(columns={'SampleGroup': 'curvepoint'}, inplace=True)
-        df_melted.rename(columns={'Total Area Fragment': 'area'}, inplace=True)
-        df_melted.rename(columns={'Peptide Sequence': 'peptide'}, inplace=True)
+        # require columns for File Name, Total Area Fragment, Peptide Sequence
+        # TODO: option for Total Area Ratio?
+        if 'Total Area Fragment' not in header_line or 'Peptide Sequence' not in header_line or 'File Name' not in header_line:
+            sys.stdout.write("Skyline export must include Peptide Sequence, File Name, and Total Area Fragment.\n")
 
-        df_melted['area'].fillna(0, inplace=True)  # replace NA with 0
+        else:
+            df_melted = pd.read_csv(filename, sep=None, engine="python")  # read in the csv
+
+            # map filenames to concentrations
+            col_conc_map = pd.read_csv(col_conc_map_file, sep=',', engine="python")
+            df_melted.rename(columns={'File Name': 'filename'}, inplace=True)
+            df_melted = pd.merge(df_melted, col_conc_map, on='filename', how='outer')
+
+            # clean up column names to match downstream convention
+            df_melted.rename(columns={'Total Area Fragment': 'area'}, inplace=True)
+            df_melted.rename(columns={'Peptide Sequence': 'peptide'}, inplace=True)
+            df_melted.rename(columns={'concentration': 'curvepoint'}, inplace=True)
+
+            df_melted['area'].fillna(0, inplace=True)  # replace NA with 0
 
     # convert the curve points to numbers so that they sort correctly
     df_melted['curvepoint'] = pd.to_numeric(df_melted['curvepoint'])
@@ -103,7 +115,7 @@ def initialize_params(subsetdf):
     return noise_slope, noise_intercept, linear_slope, linear_intercept
 
 # determine the maximum prediction band (unweighted)
-def max_prediction_interval(df, LOD, slope, intercept, num_params, segment):
+def max_prediction_interval(df, LOD, num_params, segment):
 
     if segment == 'noise':
         subset_df = df.loc[(df['curvepoint'].astype(float) < LOD)]
@@ -125,14 +137,12 @@ def max_prediction_interval(df, LOD, slope, intercept, num_params, segment):
         deg_freedom = n_obs - num_params  # degrees of freedom
         t = scipy.stats.t.ppf(0.95, deg_freedom)  # used for confidence/prediction bands
 
-        pred_y = fit_one_segment(x, slope, intercept)
-
         # estimate the error in the data/model
-        resid = y - pred_y
-        s_err = np.sqrt(np.sum(resid ** 2) / deg_freedom)  # standard deviation of the error
+        sigma_sq = (1.0/n_obs)*np.sum((y-np.mean(y))**2)
+        mse = sigma_sq / (n_obs*1.0)
 
         # determine the prediction interval
-        pred_int = max(t * s_err * np.sqrt((1+(1/n_obs)+(x-np.mean(x))**2)/np.sum((x-np.mean(x))**2)))
+        pred_int = max(t * np.sqrt(mse*((1.0+(1.0/n_obs)+((x-np.mean(x))**2)/np.sum((x-np.mean(x))**2)))))
 
     return pred_int
 
@@ -254,9 +264,9 @@ if __name__ == "__main__":
     parser.add_argument('--multiplier_file', type=str,
                         help='use a single-point multiplier associated with the curve data peptides')
     parser.add_argument('--output_path', default=os.getcwd(), type=str,
-                        help='specify an output path for figures of merit and plots (default=current directory)')
+                        help='specify an output path for figures of merit and plots')
     parser.add_argument('--plot', default='y', type=str,
-                        help='yes/no (y/n) to create individual calibration curve plots for each peptide (default=y)')
+                        help='yes/no (y/n) to create individual calibration curve plots for each peptide')
 
     # parse arguments from command line
     args = parser.parse_args()
@@ -314,10 +324,8 @@ if __name__ == "__main__":
         LOD = calculate_LOD(intercept_noise, intercept_linear, slope_noise, slope_linear, x)
 
         # calculate prediction intervals
-        PI_noise = max_prediction_interval(subset, LOD, slope_noise, intercept_noise,
-                                           (model_parameters.size / 2), 'noise')
-        PI_linear = max_prediction_interval(subset, LOD, slope_linear, intercept_linear,
-                                            (model_parameters.size / 2), 'linear')
+        PI_noise = max_prediction_interval(subset, LOD, (model_parameters.size / 2), 'noise')
+        PI_linear = max_prediction_interval(subset, LOD, (model_parameters.size / 2), 'linear')
 
         # find the intersection of the lower PI_linear and the upper PI_noise
         LOQ = calculate_LOQ(intercept_noise, intercept_linear, slope_noise, slope_linear, PI_noise, PI_linear, x)
