@@ -1,14 +1,4 @@
-# ### Background.
-# 
-# I have developed and tested a piecewise linear model for sparse calibration curve data.
-# The model consists of two regimes: the noise regime and the linear regime.
-# Because label-free DIA calibration curve data is so sparse (70% zeroes) and considering
-# the canonical shape of a calibration curve, the noise regime is initialized with a
-# slope of zero and an intercept of zero. The linear regime is initialized with a slope
-# and intercept learned from the two highest concentration points. The model produces the
-# intersection between the noise regime and the linear regime of a calibration curve,
-# and creates plots to visualize the model fits and intersection value.
-#
+
 
 import pandas as pd
 import os
@@ -117,6 +107,11 @@ def initialize_params(subsetdf):
 # determine the maximum prediction band (unweighted)
 def max_prediction_interval(df, LOD, num_params, segment):
 
+    edgeflag = False
+    if "<" in str(LOD):
+        LOD = float(LOD[1:])
+        edgeflag = True
+
     if segment == 'noise':
         subset_df = df.loc[(df['curvepoint'].astype(float) < LOD)]
     elif segment == 'linear':
@@ -144,9 +139,16 @@ def max_prediction_interval(df, LOD, num_params, segment):
         # determine the prediction interval
         pred_int = max(t * np.sqrt(mse*((1.0+(1.0/n_obs)+((x-np.mean(x))**2)/np.sum((x-np.mean(x))**2)))))
 
+    if edgeflag == True:
+        LOD = "<"+str(LOD)
+
     return pred_int
 
-# find the crossover point of the piecewise fit, defined by the intersection of the noise and linear regime
+# weighted prediction intervals
+def weighted_prediction_interval(df, LOD, num_params, segment):
+    print "todo..."
+
+# find the intersection of the noise and linear regime
 def calculate_LOD(b_noise, b_linear, m_noise, m_linear, x):
     if m_linear < 0:
         LOD = float('Inf')
@@ -154,10 +156,16 @@ def calculate_LOD(b_noise, b_linear, m_noise, m_linear, x):
         LOD = (b_linear - b_noise) / (m_noise - m_linear)
 
     # consider some special edge cases
-    if LOD > max(x):  # if the crossover point is greater than the top point of the curve or is a negative number,
+    if LOD > max(x):  # if the intersection is higher than the top point of the curve or is a negative number,
         LOD = float('Inf')  # then replace it with a value (Inf or NaN) indicating such
-    elif LOD < 0:  # if the LOQ is for some reason below zero
-        LOD= float('nan')  # then replace it with NaN
+    elif LOD < 0:  # if the LOD is for some reason below zero
+        #LOD = float('nan')  # then replace it with NaN
+        curve_points = set(list(x))
+        blank_point = min(curve_points)
+        curve_points.remove(blank_point)
+        lowest_point = min(curve_points)
+        LOD = "<"+str(lowest_point)
+
     return LOD
 
 # find the intersection of the lower PI_linear and the upper PI_noise
@@ -165,10 +173,16 @@ def calculate_LOQ(b_noise, b_linear, m_noise, m_linear, pi_noise, pi_linear, x):
     LOQ = (b_linear - b_noise - pi_linear - pi_noise) / (m_noise - m_linear)
 
     # consider some special edge cases
-    if LOQ > max(x):  # if the crossover point is greater than the top point of the curve or is a negative number,
+    if LOQ > max(x):  # if the intersection is greater than the top point of the curve or is a negative number,
         LOQ = float('Inf')  # then replace it with a value (Inf or NaN) indicating such
-    elif LOQ < 0:  # if the LOQ is for some reason below zero
-        LOQ = float('nan')  # then replace it with NaN
+    elif LOQ < 0 or np.isnan(pi_noise):  # if the LOQ is for some reason below zero
+        #LOQ = float('nan')  # then replace it with NaN
+        curve_points = set(list(x))
+        blank_point = min(curve_points)
+        curve_points.remove(blank_point)
+        lowest_point = min(curve_points)
+        LOQ = "<"+str(lowest_point)
+
     return LOQ
 
 # plot a line given a slope and intercept
@@ -183,8 +197,8 @@ def add_line_to_plot(slope, intercept, scale, setstyle='-', setcolor='k'):
         plt.plot(x_vals, y_vals, linestyle=setstyle, color=setcolor)
 
 # create plots of the curve points, the segment fits, and the LOD/LOQ values
-def build_plots(x, y, intercept_noise, slope_noise, intercept_linear, slope_linear, crossover, intersect_PI_linear):
-    # MAGIC MATPLOTLIB BELOW. NO TOUCH.
+def build_plots(x, y, intercept_noise, slope_noise, intercept_linear, slope_linear, intersection, intersect_PI_linear):
+
     plt.figure(figsize=(10, 5))
     plt.suptitle(peptide, fontsize="large")
 
@@ -195,8 +209,24 @@ def build_plots(x, y, intercept_noise, slope_noise, intercept_linear, slope_line
     add_line_to_plot(slope_noise, intercept_noise, 'linear', '-', 'g')  # add noise segment line
     if slope_linear > 0:  # add linear segment line
         add_line_to_plot(slope_linear, intercept_linear, 'linear', '-', 'g')
-    plt.axvline(x=crossover, color='m', label=('LOD= %.3e' % crossover))
-    plt.axvline(x=intersect_PI_linear, color='c', label=('LOQ= %.3e' % intersect_PI_linear))
+
+    if "<" in str(intersection):
+        plt.axvline(x=float(intersection[1:]),
+                            color='m',
+                            label=('LOD < %.3e' % float(intersection[1:])))
+    else:
+        plt.axvline(x=intersection,
+                    color='m',
+                    label=('LOD = %.3e' % intersection))
+
+    if "<" in str(intersect_PI_linear):
+        plt.axvline(x=float(intersect_PI_linear[1:]),
+                            color='c',
+                            label=('LOQ < %.3e' % float(intersect_PI_linear[1:])))
+    else:
+        plt.axvline(x=intersect_PI_linear,
+                    color='c',
+                    label=('LOQ = %.3e' % intersect_PI_linear))
 
     #plt.title(peptide, y=1.08)
     plt.xlabel("curve point")
@@ -220,8 +250,24 @@ def build_plots(x, y, intercept_noise, slope_noise, intercept_linear, slope_line
     add_line_to_plot(slope_noise, intercept_noise, 'semilogx', '-', 'g')
     if slope_linear > 0:
         add_line_to_plot(slope_linear, intercept_linear, 'semilogx', '-', 'g')
-    plt.axvline(x=crossover, color='m', label=('LOD= %.3e' % crossover))
-    plt.axvline(x=intersect_PI_linear, color='c', label=('LOQ= %.3e' % intersect_PI_linear))
+
+    if "<" in str(intersection):
+        plt.axvline(x=float(intersection[1:]),
+                            color='m',
+                            label=('LOD < %.3e' % float(intersection[1:])))
+    else:
+        plt.axvline(x=intersection,
+                    color='m',
+                    label=('LOD = %.3e' % intersection))
+
+    if "<" in str(intersect_PI_linear):
+        plt.axvline(x=float(intersect_PI_linear[1:]),
+                            color='c',
+                            label=('LOQ < %.3e' % float(intersect_PI_linear[1:])))
+    else:
+        plt.axvline(x=intersect_PI_linear,
+                    color='c',
+                    label=('LOQ = %.3e' % intersect_PI_linear))
 
     #plt.title(peptide, y=1.08)
     plt.xlabel("curve point (log10)")
@@ -246,100 +292,124 @@ def build_plots(x, y, intercept_noise, slope_noise, intercept_linear, slope_line
                 bbox_extra_artists=(legend,), bbox_inches='tight', pad_inches=0.25)
     plt.close()
 
-if __name__ == "__main__":
 
-    # usage statement and input descriptions
-    parser = argparse.ArgumentParser(
-        description="A prediction interval-based model for fitting calibration curve data. Takes calibration curve \
-                    measurements as input, and returns the Limit of Detection (LOD) and Limit of Quantitation (LOQ) for \
-                    each peptide measured in the calibration curve.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+# usage statement and input descriptions
+parser = argparse.ArgumentParser(
+    description="A prediction interval-based model for fitting calibration curve data. Takes calibration curve \
+                measurements as input, and returns the Limit of Detection (LOD) and Limit of Quantitation (LOQ) for \
+                each peptide measured in the calibration curve.",
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    parser.add_argument('curve_data', type=str,
-                        help='a matrix containing peptides and their quantitative values across each curve point (currently\
-                                supporting Encyclopedia *.elib.peptides.txt quant reports and Skyline export reports)')
-    parser.add_argument('filename_concentration_map', type=str,
-                        help='a comma-delimited file containing maps between filenames and the concentration point \
-                                they represent (two columns named "filename" and "concentration")')
-    parser.add_argument('--multiplier_file', type=str,
-                        help='use a single-point multiplier associated with the curve data peptides')
-    parser.add_argument('--output_path', default=os.getcwd(), type=str,
-                        help='specify an output path for figures of merit and plots')
-    parser.add_argument('--plot', default='y', type=str,
-                        help='yes/no (y/n) to create individual calibration curve plots for each peptide')
+parser.add_argument('curve_data', type=str,
+                    help='a matrix containing peptides and their quantitative values across each curve point (currently\
+                            supporting Encyclopedia *.elib.peptides.txt quant reports and Skyline export reports)')
+parser.add_argument('filename_concentration_map', type=str,
+                    help='a comma-delimited file containing maps between filenames and the concentration point \
+                            they represent (two columns named "filename" and "concentration")')
+parser.add_argument('--multiplier_file', type=str,
+                    help='use a single-point multiplier associated with the curve data peptides')
+parser.add_argument('--output_path', default=os.getcwd(), type=str,
+                    help='specify an output path for figures of merit and plots')
+parser.add_argument('--plot', default='y', type=str,
+                    help='yes/no (y/n) to create individual calibration curve plots for each peptide')
 
-    # parse arguments from command line
-    args = parser.parse_args()
-    raw_file = args.curve_data
-    col_conc_map_file = args.filename_concentration_map
-    multiplier_file = args.multiplier_file
-    output_dir = args.output_path
-    plot_or_not = args.plot
+# parse arguments from command line
+args = parser.parse_args()
+raw_file = args.curve_data
+col_conc_map_file = args.filename_concentration_map
+multiplier_file = args.multiplier_file
+output_dir = args.output_path
+plot_or_not = args.plot
 
-    # read in the data
-    quant_df_melted = read_input(raw_file, col_conc_map_file)
+# read in the data
+quant_df_melted = read_input(raw_file, col_conc_map_file)
 
-    # associate multiplier with the curvepoint ratio (if there is a multiplier provided)
-    if multiplier_file:
-        quant_df_melted = associate_multiplier(quant_df_melted, multiplier_file)
+# associate multiplier with the curvepoint ratio (if there is a multiplier provided)
+if multiplier_file:
+    quant_df_melted = associate_multiplier(quant_df_melted, multiplier_file)
 
-    # initialize empty data frame to store results
-    peptidecrossover = pd.DataFrame(columns=['peptide', 'LOD', 'LOQ'])
-    peptide_nan = 0
+# initialize empty data frame to store figures of merit
+peptide_fom = pd.DataFrame(columns=['peptide', 'LOD', 'LOQ'])
+peptide_nan = 0
 
-    # and awwaayyyyy we go~
-    for peptide in tqdm(quant_df_melted['peptide'].unique()):
+# and awwaayyyyy we go~
+for peptide in tqdm(quant_df_melted['peptide'].unique()):
 
-        subset = quant_df_melted.loc[(quant_df_melted['peptide'] == peptide)]  # subset the dataframe for that peptide
+    subset = quant_df_melted.loc[(quant_df_melted['peptide'] == peptide)]  # subset the dataframe for that peptide
 
-        if subset.empty:  # if the peptide is nan, skip it and move on to the next peptide
-            peptide_nan += 1
-            continue
+    if subset.empty:  # if the peptide is nan, skip it and move on to the next peptide
+        peptide_nan += 1
+        continue
 
-        # sort the dataframe with x values in strictly ascending order
-        subset = subset.sort_values(by='curvepoint', ascending=True)
+    # sort the dataframe with x values in strictly ascending order
+    subset = subset.sort_values(by='curvepoint', ascending=True)
 
-        # create the x and y arrays
-        x = np.array(subset['curvepoint'], dtype=float)
-        y = np.array(subset['area'], dtype=float)
+    # create the x and y arrays
+    x = np.array(subset['curvepoint'], dtype=float)
+    y = np.array(subset['area'], dtype=float)
 
-        # TODO REPLACE WITH .iloc
-        subset['curvepoint'] = subset['curvepoint'].astype(str)  # back to string
+    # TODO REPLACE WITH .iloc
+    subset['curvepoint'] = subset['curvepoint'].astype(str)  # back to string
 
-        # use non-linear least squares to fit the two functions (noise and linear) to data.
-        try:
-            model_parameters, cov = curve_fit(two_lines, x, y, initialize_params(subset))
-            slope_noise = model_parameters[0]
-            intercept_noise = model_parameters[1]
-            slope_linear = model_parameters[2]
-            intercept_linear = model_parameters[3]
-        except:  # catch for when a peptide can't be fit for whatever reason
-            sys.stderr.write("Peptide %s could not be curve_fit." % peptide)
-            slope_noise = np.nan
-            intercept_noise = np.nan
-            slope_linear = np.nan
-            intercept_linear = np.nan
+    # use non-linear least squares to fit the two functions (noise and linear) to data.
+    try:
+        model_parameters, cov = curve_fit(two_lines, x, y, initialize_params(subset))
+        slope_noise = model_parameters[0]
+        intercept_noise = model_parameters[1]
+        slope_linear = model_parameters[2]
+        intercept_linear = model_parameters[3]
+    except:  # catch for when a peptide can't be fit for whatever reason
+        sys.stderr.write("Peptide %s could not be curve_fit." % peptide)
+        slope_noise = np.nan
+        intercept_noise = np.nan
+        slope_linear = np.nan
+        intercept_linear = np.nan
 
-        # find the crossover point of the piecewise fit, defined by the intersection of the noise and linear regime
-        LOD = calculate_LOD(intercept_noise, intercept_linear, slope_noise, slope_linear, x)
+    # find the intersection of the noise and linear segments
+    LOD = calculate_LOD(intercept_noise,
+                        intercept_linear,
+                        slope_noise,
+                        slope_linear,
+                        x)
 
-        # calculate prediction intervals
-        PI_noise = max_prediction_interval(subset, LOD, (model_parameters.size / 2), 'noise')
-        PI_linear = max_prediction_interval(subset, LOD, (model_parameters.size / 2), 'linear')
+    # calculate prediction intervals
+    PI_noise = max_prediction_interval(subset,
+                                       LOD,
+                                       (model_parameters.size / 2),
+                                       'noise')
+    PI_linear = max_prediction_interval(subset,
+                                        LOD,
+                                        (model_parameters.size / 2),
+                                        'linear')
 
-        # find the intersection of the lower PI_linear and the upper PI_noise
-        LOQ = calculate_LOQ(intercept_noise, intercept_linear, slope_noise, slope_linear, PI_noise, PI_linear, x)
+    if "<" in str(LOD):
+        LOQ = LOD
+    else:  # find the intersection of the lower PI_linear and the upper PI_noise
+        LOQ = calculate_LOQ(intercept_noise,
+                            intercept_linear,
+                            slope_noise,
+                            slope_linear,
+                            PI_noise,
+                            PI_linear,
+                            x)
 
-        if plot_or_not == 'y':
-            # make a plot of the curve points and the fit, in both linear and log space
-            build_plots(x, y, intercept_noise, slope_noise, intercept_linear, slope_linear, LOD, LOQ)
+    if plot_or_not == 'y':
+        # make a plot of the curve points and the fit, in both linear and log space
+        build_plots(x,
+                    y,
+                    intercept_noise,
+                    slope_noise,
+                    intercept_linear,
+                    slope_linear,
+                    LOD,
+                    LOQ)
 
-        # make a dataframe row with the peptide and its crossover point
-        new_row = [peptide, LOD, LOQ]
-        new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ'])
-        peptidecrossover = peptidecrossover.append(new_df_row)
+    # make a dataframe row with the peptide and its figures of merit
+    new_row = [peptide, LOD, LOQ]
+    new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ'])
+    peptide_fom = peptide_fom.append(new_df_row)
 
-    peptidecrossover.to_csv(path_or_buf=os.path.join(output_dir,'figuresofmerit.csv'),
-                            index=False)
+peptide_fom.to_csv(path_or_buf=os.path.join(output_dir,'figuresofmerit.csv'),
+                        index=False)
 
-    print "fyi: there were ", peptide_nan, "NaN peptides in the data"
+print "fyi: there were ", peptide_nan, "NaN peptides in the data"
