@@ -6,12 +6,9 @@ import sys
 import numpy as np
 import matplotlib.pyplot as plt
 import scipy
-from scipy.optimize import curve_fit
-from scipy import stats
 from tqdm import tqdm
 import argparse
-from lmfit import minimize, Minimizer, Parameters, report_fit;
-from lmfit.models import ExpressionModel;
+from lmfit import minimize, Minimizer, Parameters, report_fit
 
 # detect whether the file is Encyclopedia output or Skyline report, then read it in appropriately
 def read_input(filename, col_conc_map_file):
@@ -70,76 +67,17 @@ def associate_multiplier(df, multiplier_file):
 
     return multiplied_df
 
-# define each of the linear segments and do a piecewise fit
-def two_lines(x, a, b, c, d):
-    a = 0  # slope of the noise (a) should be zero
-    noise = a * x + b
-    linear = c * x + d
-    return np.maximum(noise, linear)
-
-# define piecewise fit without using slope of noise as a parameter
-def two_lines_modified(x, b, c, d):
-    noise = b
-    linear = c * x + d
-    return np.maximum(noise, linear)
-
-# fit just a first degree polynomial
-def fit_one_segment(x, m, b):
-    segment = m * x + b
-    return segment
-
-# define just noise segment alone
-def fit_noise_segment(x, m_noise, b_noise):
-    noise_seg = m_noise * x + b_noise
-    return noise_seg
-
-# define just linear segment alone
-def fit_linear_segment(x, m_linear, b_linear):
-    linear_seg = m_linear * x + b_linear
-    return linear_seg
-
-# establish initial model fitting parameters based on the data
-def initialize_params(subsetdf):
-
-    mean_y = subsetdf.groupby('curvepoint')['area'].mean()  # find the mean response area for each curve point
-
-    # find the top point, second-top point, and bottom points of the curve data
-    conc_list = list(pd.to_numeric(subsetdf['curvepoint'].drop_duplicates()))
-    top_point = max(conc_list)
-    conc_list.remove(top_point)
-    second_top = max(conc_list)
-    bottom_point = min(conc_list)
-
-    # assume that slope of the noise will be zero
-    noise_slope = 0
-    # using the means, calculate a slope (y1-y2/x1-x2)
-    linear_slope = (mean_y[str(second_top)] - mean_y[str(top_point)]) / (second_top - top_point)
-    # find the y1 intercept using noise_slope=0 and the bottom point
-    noise_intercept = mean_y[str(bottom_point)] - (noise_slope * bottom_point)
-    # find the y2 intercept using linear slope (b = y-mx) and the top point
-    linear_intercept = mean_y[str(top_point)] - (linear_slope * top_point)
-
-    # edge case catch?
-    if noise_intercept < linear_intercept:
-        noise_intercept = linear_intercept*1.05
-        #sys.stderr.write("\noh no\n")
-
-    return noise_slope, noise_intercept, linear_slope, linear_intercept
-
 # determine the maximum prediction band (unweighted)
-def old_max_prediction_interval(df, LOD, num_params, segment):
-
-    edgeflag = False
-    if "<" in str(LOD):
-        LOD = float(LOD[1:])
-        edgeflag = True
+def max_prediction_interval(df, LOD, params, segment):
 
     if segment == 'noise':
         subset_df = df.loc[(df['curvepoint'].astype(float) < LOD)]
+        slope = params[0]
     elif segment == 'linear':
         subset_df = df.loc[(df['curvepoint'].astype(float) > LOD)]
-    #else:
-        #sys.stderr.write("max_prediction_interval segment parameter not set correctly")
+        slope = params[2]
+    else:
+        sys.stderr.write('something terrible has happened\n')
 
     if not subset_df.size:  # if there's no data for this segment, don't bother with a prediction interval
         pred_int = np.nan
@@ -150,53 +88,22 @@ def old_max_prediction_interval(df, LOD, num_params, segment):
         x = np.array(subset_df['curvepoint'], dtype=float)
         y = np.array(subset_df['area'], dtype=float)
 
-        # calculate model statistics
-        n_obs = y.size  # number of observations in the segment
-        deg_freedom = n_obs - num_params  # degrees of freedom
-        t = scipy.stats.t.ppf(0.95, deg_freedom) # used for confidence/prediction bands
+        n_obs = float(y.size)  # number of observations in the segment
+        ss_total = np.sum(y**2) - ((1.0/n_obs)*np.sum(y)**2)
+        ss_residual = slope*(np.sum(x*y)-((1.0/n_obs)*np.sum(x)*np.sum(y)))
+        #sys.stderr.write("ss_total = %f | ss_residual = %f\n" % (ss_total, ss_residual))
+        ss_error = ss_total - ss_residual  # TODO why is my ss_error negative for "all linear" peptides?
+        standard_error = np.sqrt(ss_error/(n_obs-2.0))
+        t = scipy.stats.t.ppf((0.05/2.0),(n_obs-2.0))  # TODO why is t statistic negative? must be something with n_obs?
 
-        # estimate the error in the data/model
-        sigma_sq = (1.0/n_obs)*np.sum((y-np.mean(y))**2)
-        mse = sigma_sq / (n_obs*1.0)
+        all_pred_int = []
+        for i in set(x):
+            this_pred_int = t*standard_error*np.sqrt(1.0+(1.0/n_obs)+((i-np.mean(x))**2)/(np.sum(x**2)-(1.0/n_obs)*np.mean(x)**2))
+            all_pred_int.append(abs(this_pred_int))
+            #sys.stderr.write("x value %f = %f prediction interval\n" % (i,this_pred_int))
 
-        # determine the prediction interval
-        pred_int = max(t * np.sqrt(mse*((1.0+(1.0/n_obs)+((x-np.mean(x))**2)/np.sum((x-np.mean(x))**2)))))
-        #sys.stderr.write("%s SEGMENT: t=%f mse=%f n_obs=%f\n" % (segment, t, mse, n_obs))
-
-    if edgeflag == True:
-        LOD = "<"+str(LOD)
-
-    return pred_int
-
-# determine the maximum prediction band (unweighted)
-def max_prediction_interval(df, LOD, num_params, segment):
-
-    if segment == 'noise':
-        subset_df = df.loc[(df['curvepoint'].astype(float) < LOD)]
-    elif segment == 'linear':
-        subset_df = df.loc[(df['curvepoint'].astype(float) > LOD)]
-
-    if not subset_df.size:  # if there's no data for this segment, don't bother with a prediction interval
-        pred_int = np.nan
-        sys.stderr.write("Peptide %s has no %s segment.\n" % (df['peptide'].unique(), segment))
-
-    else:
-        #print list(subset_df['curvepoint'].drop_duplicates())
-        x = np.array(subset_df['curvepoint'], dtype=float)
-        y = np.array(subset_df['area'], dtype=float)
-
-        # calculate model statistics
-        n_obs = y.size  # number of observations in the segment
-        #deg_freedom = n_obs - 2  # degrees of freedom
-        t = scipy.stats.t.ppf((0.05/2), (n_obs-2))  # used for confidence/prediction bands
-
-        # estimate the error in the data/model
-        sigma_sq = (1.0/n_obs)*np.sum((y-np.mean(y))**2)
-        mse = sigma_sq / (n_obs*1.0)
-
-        # determine the prediction interval
-        pred_int = max(t * np.sqrt(mse*((1.0+(1.0/n_obs)+((x-np.mean(x))**2)/np.sum((x-np.mean(x))**2)))))
-        #sys.stderr.write("%s SEGMENT: t=%f mse=%f n_obs=%f\n" % (segment, t, mse, n_obs))
+        #print all_pred_int
+        pred_int = max(all_pred_int)
 
     return pred_int
 
@@ -228,8 +135,8 @@ def calculate_LOD(model_params, x):
     return LOD
 
 # find the intersection of the lower PI_linear and the upper PI_noise
-def calculate_LOQ(b_noise, b_linear, m_noise, m_linear, pi_noise, pi_linear, x):
-    LOQ = (b_linear - b_noise - pi_linear - pi_noise) / (m_noise - m_linear)
+def calculate_LOQ(params, pi_noise, pi_linear, x):
+    LOQ = (params[3] - params[1] - pi_linear - pi_noise) / (params[0] - params[2])
 
     # consider some special edge cases
     if LOQ > max(x):  # if the intersection is greater than the top point of the curve or is a negative number,
@@ -244,19 +151,6 @@ def calculate_LOQ(b_noise, b_linear, m_noise, m_linear, pi_noise, pi_linear, x):
 
     return LOQ
 
-# plot a line given a slope and intercept
-def add_line_to_plot(slope, intercept, scale, setstyle='-', setcolor='k'):
-    axes = plt.gca()
-    xlims = np.array(axes.get_xlim())
-    x_vals = np.arange(xlims[0], xlims[1], ((xlims[1]-xlims[0])/100))
-    y_vals = intercept + slope * x_vals
-    if scale == 'semilogx':
-        plt.semilogx(x_vals, y_vals, linestyle=setstyle, color=setcolor)
-    elif scale == 'loglog':
-        plt.loglog(x_vals, y_vals, linestyle=setstyle, color=setcolor)
-    else:
-        plt.plot(x_vals, y_vals, linestyle=setstyle, color=setcolor)
-
 # create plots of the curve points, the segment fits, and the LOD/LOQ values
 # make one plot in untransformed space, and the second in semilog(x)
 def build_plots(x, y, model_results, intersection, intersect_PI_linear):
@@ -265,6 +159,19 @@ def build_plots(x, y, model_results, intersection, intersect_PI_linear):
     plt.suptitle(peptide, fontsize="large")
 
     slope_noise, intercept_noise, slope_linear, intercept_linear = model_results
+
+    # plot a line given a slope and intercept
+    def add_line_to_plot(slope, intercept, scale, setstyle='-', setcolor='k'):
+        axes = plt.gca()
+        xlims = np.array(axes.get_xlim())
+        x_vals = np.arange(xlims[0], xlims[1], ((xlims[1] - xlims[0]) / 100))
+        y_vals = intercept + slope * x_vals
+        if scale == 'semilogx':
+            plt.semilogx(x_vals, y_vals, linestyle=setstyle, color=setcolor)
+        elif scale == 'loglog':
+            plt.loglog(x_vals, y_vals, linestyle=setstyle, color=setcolor)
+        else:
+            plt.plot(x_vals, y_vals, linestyle=setstyle, color=setcolor)
 
     ###
     ### left hand plot: linear scale x axis
@@ -358,12 +265,25 @@ def build_plots(x, y, model_results, intersection, intersect_PI_linear):
 
 # create plots of the curve points, the segment fits, and the LOD/LOQ values
 # make one plot in untransformed space, and the second in log-log
-def build_other_plots(x, y, model_results, intersection, intersect_PI_linear):
+def build_loglog_plots(x, y, model_results, intersection, intersect_PI_linear):
 
     plt.figure(figsize=(10, 5))
     plt.suptitle(peptide, fontsize="large")
 
     slope_noise, intercept_noise, slope_linear, intercept_linear = model_results
+
+    # plot a line given a slope and intercept
+    def add_line_to_plot(slope, intercept, scale, setstyle='-', setcolor='k'):
+        axes = plt.gca()
+        xlims = np.array(axes.get_xlim())
+        x_vals = np.arange(xlims[0], xlims[1], ((xlims[1] - xlims[0]) / 100))
+        y_vals = intercept + slope * x_vals
+        if scale == 'semilogx':
+            plt.semilogx(x_vals, y_vals, linestyle=setstyle, color=setcolor)
+        elif scale == 'loglog':
+            plt.loglog(x_vals, y_vals, linestyle=setstyle, color=setcolor)
+        else:
+            plt.plot(x_vals, y_vals, linestyle=setstyle, color=setcolor)
 
     ###
     ### left hand plot: linear scale x axis
@@ -373,23 +293,12 @@ def build_other_plots(x, y, model_results, intersection, intersect_PI_linear):
     if slope_linear > 0:  # add linear segment line
         add_line_to_plot(slope_linear, intercept_linear, 'linear', '-', 'g')
 
-    if "<" in str(intersection):
-        plt.axvline(x=float(intersection[1:]),
-                            color='m',
-                            label=('LOD < %.3e' % float(intersection[1:])))
-    else:
-        plt.axvline(x=intersection,
-                    color='m',
-                    label=('LOD = %.3e' % intersection))
-
-    if "<" in str(intersect_PI_linear):
-        plt.axvline(x=float(intersect_PI_linear[1:]),
-                            color='c',
-                            label=('LOQ < %.3e' % float(intersect_PI_linear[1:])))
-    else:
-        plt.axvline(x=intersect_PI_linear,
-                    color='c',
-                    label=('LOQ = %.3e' % intersect_PI_linear))
+    plt.axvline(x=intersection,
+                color='m',
+                label=('LOD = %.3e' % intersection))
+    plt.axvline(x=intersect_PI_linear,
+                color='c',
+                label=('LOQ = %.3e' % intersect_PI_linear))
 
     #plt.title(peptide, y=1.08)
     plt.xlabel("curve point")
@@ -404,7 +313,8 @@ def build_other_plots(x, y, model_results, intersection, intersect_PI_linear):
     add_line_to_plot(slope_linear, intercept_linear + PI_linear, 'linear', '--', setcolor='0.5')
     add_line_to_plot(slope_linear, intercept_linear - PI_linear, 'linear', '--', setcolor='0.5')
 
-    #plt.ylim(ymin=(intercept_noise - (PI_noise+0.25*PI_noise)), ymax=(max(y)+max(y)*0.05))
+    plt.ylim(ymin=min(y)*0.5, ymax=(max(y)*1.05))
+    plt.xlim(xmin=min(x)-np.finfo(np.float).eps, xmax=max(x)*1.1)
 
     ###
     ### right hand plot: log scale x axis (semilog x)
@@ -414,27 +324,16 @@ def build_other_plots(x, y, model_results, intersection, intersect_PI_linear):
     if slope_linear > 0:
         add_line_to_plot(slope_linear, intercept_linear, 'loglog', '-', 'g')
 
-    if "<" in str(intersection):
-        plt.axvline(x=float(intersection[1:]),
-                            color='m',
-                            label=('LOD < %.3e' % float(intersection[1:])))
-    else:
-        plt.axvline(x=intersection,
-                    color='m',
-                    label=('LOD = %.3e' % intersection))
-
-    if "<" in str(intersect_PI_linear):
-        plt.axvline(x=float(intersect_PI_linear[1:]),
-                            color='c',
-                            label=('LOQ < %.3e' % float(intersect_PI_linear[1:])))
-    else:
-        plt.axvline(x=intersect_PI_linear,
-                    color='c',
-                    label=('LOQ = %.3e' % intersect_PI_linear))
+    plt.axvline(x=intersection,
+                color='m',
+                label=('LOD = %.3e' % intersection))
+    plt.axvline(x=intersect_PI_linear,
+                color='c',
+                label=('LOQ = %.3e' % intersect_PI_linear))
 
     #plt.title(peptide, y=1.08)
     plt.xlabel("curve point (log10)")
-    plt.ylabel("area")
+    plt.ylabel("area (log10)")
 
     # force y axis ticks to be scientific notation so the plot is prettier (x is already semilog)
     #plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0))
@@ -445,52 +344,181 @@ def build_other_plots(x, y, model_results, intersection, intersect_PI_linear):
     add_line_to_plot(slope_linear, intercept_linear + PI_linear, 'loglog', '--', setcolor='0.5')
     add_line_to_plot(slope_linear, intercept_linear - PI_linear, 'loglog', '--', setcolor='0.5')
 
-    #plt.ylim(ymin=(intercept_noise - (PI_noise+0.25*PI_noise)), ymax=(max(y)+max(y)*0.05))
+    plt.ylim(ymin=min(y)*0.5, ymax=(max(y)*1.05))
+    plt.xlim(xmin=min(x)-np.finfo(np.float).eps, xmax=max(x)*1.1)
 
     # add legend with LOD and LOQ values
     legend = plt.legend(loc=9, bbox_to_anchor=(0, -0.21, 1., .102), ncol=2)
-    plt.show()
+    #plt.show()
+    # save the figure
+    plt.savefig(os.path.join(output_dir, peptide + '.png'),
+                bbox_extra_artists=(legend,), bbox_inches='tight', pad_inches=0.25)
+    plt.close()
+
+# create plots of the curve points, the segment fits, and the LOD/LOQ values
+# make one plot in untransformed space, and the second zoomed in around the LOD/LOQ
+def build_other_plots(x, y, model_results, intersection, intersect_PI_linear):
+
+    plt.figure(figsize=(10, 5))
+    plt.suptitle(peptide, fontsize="large")
+
+    slope_noise, intercept_noise, slope_linear, intercept_linear = model_results
+
+    # plot a line given a slope and intercept
+    def add_line_to_plot(slope, intercept, scale, setstyle='-', setcolor='k'):
+        axes = plt.gca()
+        xlims = np.array(axes.get_xlim())
+        x_vals = np.arange(xlims[0], xlims[1], ((xlims[1] - xlims[0]) / 100))
+        y_vals = intercept + slope * x_vals
+        if scale == 'semilogx':
+            plt.semilogx(x_vals, y_vals, linestyle=setstyle, color=setcolor)
+        elif scale == 'loglog':
+            plt.loglog(x_vals, y_vals, linestyle=setstyle, color=setcolor)
+        else:
+            plt.plot(x_vals, y_vals, linestyle=setstyle, color=setcolor)
+
+    ###
+    ### left hand plot: linear scale x axis
+    plt.subplot(1, 2, 1)
+    plt.plot(x, y, 'o')  # scatterplot of the data
+    add_line_to_plot(slope_noise, intercept_noise, 'linear', '-', 'g')  # add noise segment line
+    if slope_linear > 0:  # add linear segment line
+        add_line_to_plot(slope_linear, intercept_linear, 'linear', '-', 'g')
+
+    plt.axvline(x=intersection,
+                color='m',
+                label=('LOD = %.3e' % intersection))
+    plt.axvline(x=intersect_PI_linear,
+                color='c',
+                label=('LOQ = %.3e' % intersect_PI_linear))
+
+    #plt.title(peptide, y=1.08)
+    plt.xlabel("curve point")
+    plt.ylabel("area")
+
+    # force axis ticks to be scientific notation so the plot is prettier
+    #plt.ticklabel_format(style='sci', axis='both', scilimits=(0,0))
+
+    # Add the prediction intervals on the left hand plot
+    add_line_to_plot(slope_noise, intercept_noise + PI_noise, 'linear', '--', setcolor='0.5')
+    add_line_to_plot(slope_noise, intercept_noise - PI_noise, 'linear', '--', setcolor='0.5')
+    add_line_to_plot(slope_linear, intercept_linear + PI_linear, 'linear', '--', setcolor='0.5')
+    add_line_to_plot(slope_linear, intercept_linear - PI_linear, 'linear', '--', setcolor='0.5')
+
+    plt.ylim(ymin=min(y)*0.5, ymax=(max(y)*1.05))
+    plt.xlim(xmin=min(x)-np.finfo(np.float).eps, xmax=max(x)*1.1)
+
+    ###
+    ### right hand plot: zoomed x axis
+    plt.subplot(1, 2, 2)
+    plt.plot(x, y, 'o')
+    add_line_to_plot(slope_noise, intercept_noise, 'linear', '-', 'g')
+    if slope_linear > 0:
+        add_line_to_plot(slope_linear, intercept_linear, 'linear', '-', 'g')
+
+    plt.axvline(x=intersection,
+                color='m',
+                label=('LOD = %.3e' % intersection))
+    plt.axvline(x=intersect_PI_linear,
+                color='c',
+                label=('LOQ = %.3e' % intersect_PI_linear))
+
+    #plt.title(peptide, y=1.08)
+    plt.xlabel("curve point")
+    plt.ylabel("area)")
+
+    # force y axis ticks to be scientific notation so the plot is prettier (x is already semilog)
+    #plt.ticklabel_format(style='sci', axis='y', scilimits=(0,0))
+
+    # Add the prediction intervals on the right hand plot
+    add_line_to_plot(slope_noise, intercept_noise + PI_noise, 'linear', '--', setcolor='0.5')
+    add_line_to_plot(slope_noise, intercept_noise - PI_noise, 'linear', '--', setcolor='0.5')
+    add_line_to_plot(slope_linear, intercept_linear + PI_linear, 'linear', '--', setcolor='0.5')
+    add_line_to_plot(slope_linear, intercept_linear - PI_linear, 'linear', '--', setcolor='0.5')
+
+    #plt.ylim(ymin=min(y)*0.5, ymax=(max(y)*1.05))
+    plt.xlim(xmin=intersection*0.8, xmax=intersect_PI_linear*1.1)
+
+    # add legend with LOD and LOQ values
+    legend = plt.legend(loc=9, bbox_to_anchor=(0, -0.21, 1., .102), ncol=2)
+    #plt.show()
     # save the figure
     plt.savefig(os.path.join(output_dir, peptide + '.png'),
                 bbox_extra_artists=(legend,), bbox_inches='tight', pad_inches=0.25)
     plt.close()
 
 # yang's solve for the piecewise fit
-def fit_by_lmfit(x, y, title):
+def fit_by_lmfit(x, y):
 
     def fcn2min(params, x, data, weight):
-        a = params['a'].value;
-        b = params['b'].value;
-        c = params['c'].value;
-        model = np.maximum(c, a*x+b);
-        return (model - data) * weight;
+        a = params['a'].value
+        b = params['b'].value
+        c = params['c'].value
+        model = np.maximum(c, a*x+b)
+        return (model - data) * weight
+
+    # parameter initialization
+    def initialize_params(x, y):
+        subsetdf = pd.DataFrame({'curvepoint': pd.to_numeric(x), 'area': y})
+        mean_y = subsetdf.groupby('curvepoint')['area'].mean()  # find the mean response area for each curve point
+
+        # find the top point, second-top point, and bottom points of the curve data
+        # conc_list = list(pd.to_numeric(subsetdf['curvepoint'].drop_duplicates()))
+        conc_list = list(set(x))
+        top_point = max(conc_list)
+        conc_list.remove(top_point)
+        second_top = max(conc_list)
+        bottom_point = min(conc_list)
+        conc_list.remove(bottom_point)
+        second_bottom = min(conc_list)
+        conc_list.remove(second_bottom)
+        third_bottom = min(conc_list)
+
+        '''# take the top 10% points to fit the horizontal line
+        conc_list = list(x)
+        top10pct = int(.1*len(conc_list))
+        # take the bottom 50% to fit the diagonal?
+        bottom50pct = int(.5 * len(conc_list))
+        noise_intercept = mean_y[bottom50pct]'''
+
+        # using the means, calculate a slope (y1-y2/x1-x2)
+        linear_slope = (mean_y[second_top] - mean_y[top_point]) / (second_top - top_point)
+        # find the noise intercept using average of bottom two points
+        noise_intercept = (mean_y[bottom_point]+mean_y[second_bottom]+mean_y[third_bottom])/3.0
+        # find the linear intercept using linear slope (b = y-mx) and the top point
+        linear_intercept = mean_y[top_point] - (linear_slope * top_point)
+
+        # edge case catch?
+        if noise_intercept < linear_intercept:
+            noise_intercept = linear_intercept * 1.05
+            sys.stderr.write("awh geeze noise_intercept < linear_intercept\n")
+
+        return linear_slope, linear_intercept, noise_intercept
 
     params = Parameters()
-    params.add('a', value=1, min=0, vary=True);
-    params.add('b', value=1, min=0, vary=True);
-    params.add('c_minus_b', value=1, min=0, vary=True);
-    params.add('c', expr='b + c_minus_b');
+    #params.add('a', value=1, min=0, vary=True)
+    #params.add('b', value=1, vary=True)
+    #params.add('c_minus_b', value=1, min=0, vary=True)
+    #params.add('c', expr='b + c_minus_b')
+    initial_a, initial_b, initial_c = initialize_params(x,y)
+    initial_cminusb = initial_c - initial_b
+    params.add('a', value=initial_a, min=0, vary=True)
+    params.add('b', value=initial_b, vary=True)
+    params.add('c_minus_b', value=initial_cminusb, min=0, vary=True)
+    params.add('c', expr='b + c_minus_b')
 
-    weight = np.minimum(1/(np.asarray(np.sqrt(x), dtype=float)+np.finfo(np.float).eps), 1000);
-    minner = Minimizer(fcn2min, params, fcn_args=(x, y, np.ones(len(x)) ));
-    result = minner.minimize();
+    weights = np.minimum(1/(np.asarray(np.sqrt(x), dtype=float)+np.finfo(np.float).eps), 1000)  # inverse weights
+    #weights =  np.minimum(np.asarray(x, dtype=float), 1000) # fake weights
+    minner = Minimizer(fcn2min, params, fcn_args=(x, y, weights ))
+    result = minner.minimize()
 
-    final = y + result.residual;
-
-    a = result.params['a'].value;
-    b = result.params['b'].value;
-    c = b + result.params['c_minus_b'].value;
-    #logger.info('fit_by_lmfit\ta={}\tb={}\tc={}'.format(a,b,c));
-
-    ax = plt.gca();
-    ax.plot(x, y, 'bo');
-    ax.plot([np.min(x), np.max(x)], [c, c], 'g-');
-    ax.plot([np.min(x), np.max(x)], [a*np.min(x)+b, a*np.max(x)+b], 'g-');
-    ax.set_title('lmfit\t'+title, fontsize=18);
-    # ax.set_xscale('log');
-    plt.show();
+    #final = y + result.residual
+    #print report_fit(result)
+    # TODO try importing other parts of lmfit, like fit-statistics or something.
+    # TODO check if maybe there's someway to get better model parameters
 
     return result
+
 
 # usage statement and input descriptions
 parser = argparse.ArgumentParser(
@@ -528,7 +556,9 @@ if multiplier_file:
     quant_df_melted = associate_multiplier(quant_df_melted, multiplier_file)
 
 # initialize empty data frame to store figures of merit
-peptide_fom = pd.DataFrame(columns=['peptide', 'LOD', 'LOQ'])
+peptide_fom = pd.DataFrame(columns=['peptide', 'LOD', 'LOQ',
+                                    'slope_linear', 'intercept_linear', 'intercept_noise',
+                                    'PI_noise', 'PI_linear'])
 peptide_nan = 0
 
 # and awwaayyyyy we go~
@@ -542,7 +572,6 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
 
     # sort the dataframe with x values in strictly ascending order
     subset = subset.sort_values(by='curvepoint', ascending=True)
-    #subset = subset_wblank.loc[subset_wblank['curvepoint'] != min(subset_wblank['curvepoint'])]
 
     # create the x and y arrays
     x = np.array(subset['curvepoint'], dtype=float)
@@ -551,28 +580,9 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     # TODO REPLACE WITH .iloc
     subset['curvepoint'] = subset['curvepoint'].astype(str)  # back to string
 
-    ''' previously...
-    # use non-linear least squares to fit the two functions (noise and linear) to data.
-    try:
-        model_parameters, cov = curve_fit(two_lines, x, y, p0=initialize_params(subset))
-        slope_noise = model_parameters[0]
-        intercept_noise = model_parameters[1]
-        slope_linear = model_parameters[2]
-        intercept_linear = model_parameters[3]
-        #print model_parameters
-
-    except:  # catch for when a peptide can't be fit for whatever reason
-        sys.stderr.write("Peptide %s could not be curve_fit." % peptide)
-        slope_noise = np.nan
-        intercept_noise = np.nan
-        slope_linear = np.nan
-        intercept_linear = np.nan'''
-
-    ####################
-    #### lmfit approach by yang!
+    ## lmfit approach by yang!
     # set up the model and the parameters
-    result = fit_by_lmfit(x, y, peptide)
-    ####################
+    result = fit_by_lmfit(x, y)
 
     # save model fit results
     slope_noise = 0.0
@@ -580,54 +590,33 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     slope_linear = result.params['a'].value
     intercept_linear = result.params['b'].value
     model_parameters = np.asarray([slope_noise, intercept_noise, slope_linear, intercept_linear])
-    sys.stderr.write("slope_linear=%f, intercept_linear=%f, intercept_noise=%f\n" %
-                     (slope_linear, intercept_linear, intercept_noise))
 
     # find the intersection of the noise and linear segments
     LOD = calculate_LOD(model_parameters, x)
 
     # calculate prediction intervals
-    PI_noise = max_prediction_interval(subset,
-                                       LOD,
-                                       (model_parameters.size / 2),
-                                       'noise')
-    PI_linear = max_prediction_interval(subset,
-                                        LOD,
-                                        (model_parameters.size / 2),
-                                        'linear')
+    PI_noise = max_prediction_interval(subset, LOD, model_parameters, 'noise')
+    PI_linear = max_prediction_interval(subset, LOD, model_parameters, 'linear')
 
-    if "<" in str(LOD):
-        LOQ = LOD
-    else:  # find the intersection of the lower PI_linear and the upper PI_noise
-        LOQ = calculate_LOQ(intercept_noise,
-                            intercept_linear,
-                            slope_noise,
-                            slope_linear,
-                            PI_noise,
-                            PI_linear,
-                            x)
+    # find the intersection of the lower PI_linear and the upper PI_noise
+    LOQ = calculate_LOQ(model_parameters, PI_noise, PI_linear, x)
 
     if plot_or_not == 'y':
         # make a plot of the curve points and the fit, in both linear and log space
-        '''build_plots(x,
-                    y,
-                    model_parameters,
-                    LOD,
-                    LOQ)'''
-        build_other_plots(x,
-                    y,
-                    model_parameters,
-                    LOD,
-                    LOQ)
+        build_loglog_plots(x, y, model_parameters, LOD, LOQ)
 
     # make a dataframe row with the peptide and its figures of merit
-    new_row = [peptide, LOD, LOQ]
-    new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ'])
+    new_row = [peptide, LOD, LOQ, slope_linear, intercept_linear, intercept_noise, PI_noise, PI_linear]
+    new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ',
+                                                  'slope_linear', 'intercept_linear', 'intercept_noise',
+                                                  'PI_noise', 'PI_linear'])
     peptide_fom = peptide_fom.append(new_df_row)
 
     sys.stderr.write("%s LOD=%f, LOQ=%f\n" % (peptide, LOD, LOQ))
+    sys.stderr.write("%s slope_linear=%f, intercept_linear=%f, intercept_noise=%f\n" %
+                     (peptide, slope_linear, intercept_linear, intercept_noise))
+    sys.stderr.write("%s PI_noise=%f, PI_linear=%f\n" % (peptide, PI_noise, PI_linear))
 
 peptide_fom.to_csv(path_or_buf=os.path.join(output_dir,'figuresofmerit.csv'),
                         index=False)
 
-print "fyi: there were ", peptide_nan, "NaN peptides in the data"
