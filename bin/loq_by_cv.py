@@ -8,7 +8,7 @@ import argparse
 
 # detect whether the file is Encyclopedia output or Skyline report, then read it in appropriately
 def read_input(filename, col_conc_map_file):
-    # TODO: incorporate an optional multiplier file [peptide, multiplier]
+
     header_line = open(filename, 'r').readline()
 
     # if numFragments is a column, it's an Encyclopedia file
@@ -26,18 +26,33 @@ def read_input(filename, col_conc_map_file):
     else:
         sys.stdout.write("Input identified as Skyline export filetype. \n")
 
-        df_melted = pd.read_csv(filename, sep=None, engine="python")  # read in the csv
-        # TODO: REQUIRE COLUMN NAMING SCHEME (SampleGroup, Total Area Fragment, Peptide Sequence)
-        df_melted.rename(columns={'SampleGroup': 'curvepoint'}, inplace=True)
-        df_melted.rename(columns={'Total Area Fragment': 'area'}, inplace=True)
-        df_melted.rename(columns={'Peptide Sequence': 'peptide'}, inplace=True)
+        # require columns for File Name, Total Area Fragment, Peptide Sequence
+        # TODO: option for Total Area Ratio?
+        if 'Total Area Fragment' not in header_line \
+                or 'Peptide Sequence' not in header_line \
+                or 'File Name' not in header_line:
+            sys.exit("Skyline export must include Peptide Sequence, File Name, and Total Area Fragment.\n")
 
-        df_melted['area'].fillna(0, inplace=True)  # replace NA with 0
+        else:
+            df_melted = pd.read_csv(filename, sep=None, engine="python")  # read in the csv
+
+            # map filenames to concentrations
+            col_conc_map = pd.read_csv(col_conc_map_file, sep=',', engine="python")
+            df_melted.rename(columns={'File Name': 'filename'}, inplace=True)
+            df_melted = pd.merge(df_melted, col_conc_map, on='filename', how='outer')
+
+            # clean up column names to match downstream convention
+            df_melted.rename(columns={'Total Area Fragment': 'area'}, inplace=True)
+            df_melted.rename(columns={'Peptide Sequence': 'peptide'}, inplace=True)
+            df_melted.rename(columns={'concentration': 'curvepoint'}, inplace=True)
+
+            df_melted['area'].fillna(0, inplace=True)  # replace NA with 0
 
     # convert the curve points to numbers so that they sort correctly
     df_melted['curvepoint'] = pd.to_numeric(df_melted['curvepoint'])
 
     return df_melted
+
 
 # associates a multiplier value to the curvepoint a la single-point calibration
 def associate_multiplier(df, multiplier_file):
@@ -101,30 +116,25 @@ def calculate_LOQ_byCV(df):
             this_peptides_CVs = this_peptides_CVs.append(new_df_row)
 
         # sort by curvepoint
-        this_peptides_CVs = this_peptides_CVs.sort_values(by='curvepoint', ascending=False)
+        this_peptides_CVs = this_peptides_CVs.sort_values(by='curvepoint', ascending=True)
         curvepoints = this_peptides_CVs['curvepoint'].unique().tolist()
-
-        # set the first curvepoint in case it is the one with <=20% CV
-        prev_i = max(curvepoints)
 
         # move down the curve points from highest to lowest, checking the
         # cv at each to find the lowest consecutive point with <= 20% CV
-        if this_peptides_CVs.loc[this_peptides_CVs['curvepoint'] == max(curvepoints), '%CV'].iloc[0] > 20:
-            loq = np.nan
-        else:
-            for i in curvepoints:
-                if this_peptides_CVs.loc[this_peptides_CVs['curvepoint'] == i, '%CV'].iloc[0] <= 20:
-                    prev_i = i
-                    continue
-                else:
-                    loq = prev_i
-                    break
+        loq = np.nan
+        for i in curvepoints:
+            if this_peptides_CVs.loc[this_peptides_CVs['curvepoint'] == i, '%CV'].iloc[0] <= 20:
+                loq = i  # loq is lowest point with <= 20% cv
+                break
 
         # write the 20% cv loq to dataframe
         new_loq_row = pd.DataFrame([[peptide, loq]], columns=loq_colnames)
         peptideLOQs = peptideLOQs.append(new_loq_row)
 
+        #this_peptides_CVs.to_csv(os.path.join(output_dir, "./peptidecvs.csv"), index=False)
+
     peptideLOQs.to_csv(os.path.join(output_dir, "./loqsbycv.csv"), index=False)
+    peptideCVs.to_csv(os.path.join(output_dir, "./peptidecvs.csv"), index=False)
 
     loq_byCV_df = pd.merge(df, pd.merge(peptideLOQs, peptideCVs, on=['peptide'], how='outer'),
                            on=['peptide', 'curvepoint'], how='outer')
