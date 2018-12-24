@@ -11,7 +11,8 @@ import argparse
 from lmfit import minimize, Minimizer, Parameters, fit_report, Model, conf_interval, printfuncs
 from scipy.optimize import curve_fit
 import statsmodels.formula.api as smf
-
+from statsmodels.sandbox.regression.predstd import wls_prediction_std
+from random import sample
 
 
 # detect whether the file is Encyclopedia output or Skyline report, then read it in appropriately
@@ -507,7 +508,7 @@ def calculate_fom(model_params, df, conf_int):
 
 
 # create plots of the curve points, the segment fits, and the LOD/LOQ values
-def build_plots(x, y, model_results, intersection, intersect_PI_linear):
+def build_plots_SAVE(x, y, model_results, intersection, intersect_PI_linear):
 
     plt.figure(figsize=(10, 5))
     plt.suptitle(peptide, fontsize="large")
@@ -605,7 +606,7 @@ def build_plots(x, y, model_results, intersection, intersect_PI_linear):
     plt.close()
 
 
-# DO NOT USE I BROKE THIS!! my solve for the piecewise fit using lmfit Models
+# DO NOT USE!! I BROKE THIS!! my solve for the piecewise fit using lmfit Models
 def fit_by_lmfit(x, y):
 
     # define each of the linear segments and do a piecewise fit
@@ -660,7 +661,61 @@ def fit_by_lmfit(x, y):
     return result
 
 
-# yang's solve for the piecewise fit using lmfit Minimize
+# my original scipy fit, abandoned due to lack of inverse weighting
+def fit_by_scipy(x,y):
+
+    # define each of the curve's segments and do a piecewise fit
+    def two_lines(x, a, b, c, d):
+        a = 0  # slope of the noise (a) should be zero
+        noise = a * x + b
+        linear = c * x + d
+        return np.maximum(noise, linear)
+
+    # parameter initialization
+    def initialize_params(x, y):
+        subsetdf = pd.DataFrame({'curvepoint': pd.to_numeric(x), 'area': y})
+        mean_y = subsetdf.groupby('curvepoint')['area'].mean()  # find the mean response area for each curve point
+
+        # find the top point, second-top point, and bottom points of the curve data
+        # conc_list = list(pd.to_numeric(subsetdf['curvepoint'].drop_duplicates()))
+        conc_list = list(set(x))
+        top_point = max(conc_list)
+        conc_list.remove(top_point)
+        second_top = max(conc_list)
+        bottom_point = min(conc_list)
+
+        # using the means, calculate a slope (y1-y2/x1-x2)
+        linear_slope = (mean_y[second_top] - mean_y[top_point]) / (second_top - top_point)
+        # find the noise intercept using average of bottom three points
+        noise_intercept = mean_y[bottom_point]
+        # find the linear intercept using linear slope (b = y-mx) and the top point
+        linear_intercept = mean_y[top_point] - (linear_slope * top_point)
+
+        # edge case catch?
+        if noise_intercept < linear_intercept:
+            noise_intercept = linear_intercept * 1.05
+
+        noise_slope = 0
+
+        return noise_slope, noise_intercept, linear_slope, linear_intercept
+
+    weights = np.minimum(1/(np.asarray(np.sqrt(x), dtype=float)+np.finfo(np.float).eps), 1000)  # inverse weights
+
+    # use non-linear least squares to fit the two functions (noise and linear) to data.
+    try:
+        model_parameters, cov = curve_fit(two_lines, x, y,
+                                          p0=initialize_params(x,y),
+                                          sigma=weights)  # I don't think 'sigma' actually does inverse weighting
+        #print model_parameters
+
+    except:  # catch for when a peptide can't be fit for whatever reason
+        sys.stderr.write("Peptide %s could not be curve_fit." % peptide)
+        model_parameters = [np.nan, np.nan, np.nan, np.nan]
+
+    return model_parameters
+
+
+# yang's solve for the piecewise fit using lmfit Minimize function
 def fit_by_lmfit_yang(x, y):
 
     def fcn2min(params, x, data, weight):
@@ -714,58 +769,145 @@ def fit_by_lmfit_yang(x, y):
     return result, minner
 
 
-# my original scipy fit, abandoned due to lack of inverse weighting
-def fit_by_scipy(x,y):
+# determine prediction interval by bootstrapping
+def bootstrap_pi(df, fit_params, new_x, bootreps):
 
-    # define each of the curve's segments and do a piecewise fit
-    def two_lines(x, a, b, c, d):
-        a = 0  # slope of the noise (a) should be zero
-        noise = a * x + b
-        linear = c * x + d
-        return np.maximum(noise, linear)
+    def predict_using_newx(df, new_x):
+        x = np.array(df['curvepoint'], dtype=float)
+        y = np.array(df['area'], dtype=float)
+        fit_result, mini_result = fit_by_lmfit_yang(x, y)
+        # slope_linear = result.params['a'].value
+        # intercept_linear = result.params['b'].value
+        # intercept_noise = result.params['c'].value
+        if fit_result.params['a'].value < 0:  # if the slope of the linear segment is zero, give up
+            new_y = float('Inf')
+        else:
+            intersection = (fit_result.params['b'].value - fit_result.params['c'].value) / (0. - fit_result.params['a'].value)
+            if new_x <= intersection:  # if the new_x is in the noise,
+                new_y = fit_result.params['c'].value
+            elif new_x > intersection:
+                new_y = (fit_result.params['a'].value * new_x) + fit_result.params['b'].value
+        return new_y
 
-    # parameter initialization
-    def initialize_params(x, y):
-        subsetdf = pd.DataFrame({'curvepoint': pd.to_numeric(x), 'area': y})
-        mean_y = subsetdf.groupby('curvepoint')['area'].mean()  # find the mean response area for each curve point
+    def predict_using_orig_params(orig_params, new_x):
+        intersection = (orig_params.params['b'].value - orig_params.params['c'].value) / (0. - orig_params.params['a'].value)
+        if new_x <= intersection:  # if the new_x is in the noise,
+            new_y = orig_params.params['c'].value
+        elif new_x > intersection:
+            new_y = (orig_params.params['a'].value * new_x) + orig_params.params['b'].value
+        return new_y
 
-        # find the top point, second-top point, and bottom points of the curve data
-        # conc_list = list(pd.to_numeric(subsetdf['curvepoint'].drop_duplicates()))
-        conc_list = list(set(x))
-        top_point = max(conc_list)
-        conc_list.remove(top_point)
-        second_top = max(conc_list)
-        bottom_point = min(conc_list)
+    # Bootstrap the data (resampling the data with replacement)
+    # get the regression prediction (new_y) at point new_x
+    pred = []
+    for i in range(bootreps):
+        resampled_df = df.sample(n=len(df), replace=True)
+        p = predict_using_newx(resampled_df, new_x)
+        pred.append(p)
 
-        # using the means, calculate a slope (y1-y2/x1-x2)
-        linear_slope = (mean_y[second_top] - mean_y[top_point]) / (second_top - top_point)
-        # find the noise intercept using average of bottom three points
-        noise_intercept = mean_y[bottom_point]
-        # find the linear intercept using linear slope (b = y-mx) and the top point
-        linear_intercept = mean_y[top_point] - (linear_slope * top_point)
+    # calculate lower and upper 95% PI
+    pred_df = pd.DataFrame([pred], [new_x]); #print pred_df
+    predint_row=((pred_df.T).describe(percentiles=[.05, .95])).T;  #print predint_row
 
-        # edge case catch?
-        if noise_intercept < linear_intercept:
-            noise_intercept = linear_intercept * 1.05
+    return predint_row
 
-        noise_slope = 0
 
-        return noise_slope, noise_intercept, linear_slope, linear_intercept
+# TEST PLOTS WITH BOOTSTRAPPED PREDINT'S PLOTTED
+def build_plots(x, y, model_results, intersection, intersect_PI_linear, predint_results):
 
-    weights = np.minimum(1/(np.asarray(np.sqrt(x), dtype=float)+np.finfo(np.float).eps), 1000)  # inverse weights
+    plt.figure(figsize=(10, 5))
+    plt.suptitle(peptide, fontsize="large")
 
-    # use non-linear least squares to fit the two functions (noise and linear) to data.
-    try:
-        model_parameters, cov = curve_fit(two_lines, x, y,
-                                          p0=initialize_params(x,y),
-                                          sigma=weights)  # I don't think 'sigma' actually does inverse weighting
-        #print model_parameters
+    slope_noise, intercept_noise, slope_linear, intercept_linear = model_results
 
-    except:  # catch for when a peptide can't be fit for whatever reason
-        sys.stderr.write("Peptide %s could not be curve_fit." % peptide)
-        model_parameters = [np.nan, np.nan, np.nan, np.nan]
+    # plot a line given a slope and intercept
+    def add_line_to_plot(slope, intercept, scale, setstyle='-', setcolor='k'):
+        axes = plt.gca()
+        xlims = np.array(axes.get_xlim())
+        x_vals = np.arange(xlims[0], xlims[1], ((xlims[1] - xlims[0]) / 100))
+        y_vals = intercept + slope * x_vals
+        if scale == 'semilogx':
+            plt.semilogx(x_vals, y_vals, linestyle=setstyle, color=setcolor)
+        elif scale == 'loglog':
+            plt.loglog(x_vals, y_vals, linestyle=setstyle, color=setcolor)
+        else:
+            plt.plot(x_vals, y_vals, linestyle=setstyle, color=setcolor)
 
-    return model_parameters
+    ###
+    ### left hand plot: linear scale x axis
+    plt.subplot(1, 2, 1)
+    plt.plot(x, y, 'o')  # scatterplot of the data
+    plt.plot(list(predint_results.index), predint_results['5%'], 'x')
+    plt.plot(list(predint_results.index), predint_results['95%'], 'x')
+    add_line_to_plot(slope_noise, intercept_noise, 'linear', '-', 'g')  # add noise segment line
+    if slope_linear > 0:  # add linear segment line
+        add_line_to_plot(slope_linear, intercept_linear, 'linear', '-', 'g')
+
+    plt.axvline(x=intersection,
+                color='m',
+                label=('LOD = %.3e' % intersection))
+
+    plt.axvline(x=intersect_PI_linear,
+                color='c',
+                label=('LOQ = %.3e' % intersect_PI_linear))
+
+    #plt.title(peptide, y=1.08)
+    plt.xlabel("curve point")
+    plt.ylabel("area")
+
+    # force axis ticks to be scientific notation so the plot is prettier
+    plt.ticklabel_format(style='sci', axis='both', scilimits=(0, 0))
+
+    # Add the prediction intervals on the left hand plot
+    add_line_to_plot(slope_noise, intercept_noise + PI_noise, 'linear', '--', setcolor='0.5')
+    #add_line_to_plot(slope_noise, intercept_noise - PI_noise, 'linear', '--', setcolor='0.5')
+    #add_line_to_plot(slope_linear, intercept_linear + PI_linear, 'linear', '--', setcolor='0.5')
+    add_line_to_plot(slope_linear, intercept_linear - PI_linear, 'linear', '--', setcolor='0.5')
+
+    plt.xlim(xmin=min(x)-max(x)*0.01)  # anchor x and y to 0-ish
+    plt.ylim(ymin=min(y)-max(y)*0.01, ymax=(max(y))*1.01)
+
+
+    ###
+    ### right hand plot: zoom in on LOD/LOQ scaled x axis
+    plt.subplot(1, 2, 2)
+    plt.semilogx(x, y, 'o')
+    plt.semilogx(list(predint_results.index), predint_results['5%'], 'x')
+    plt.semilogx(list(predint_results.index), predint_results['95%'], 'x')
+    add_line_to_plot(slope_noise, intercept_noise, 'semilogx', '-', 'g')
+    if slope_linear > 0:
+        add_line_to_plot(slope_linear, intercept_linear, 'semilogx', '-', 'g')
+
+    plt.axvline(x=intersection,
+                color='m',
+                label=('LOD = %.3e' % intersection))
+
+    plt.axvline(x=intersect_PI_linear,
+                color='c',
+                label=('LOQ = %.3e' % intersect_PI_linear))
+
+    #plt.title(peptide, y=1.08)
+    plt.xlabel("curve point (log10)")
+    plt.ylabel("area")
+
+    # force y axis ticks to be scientific notation so the plot is prettier (x is already semilog)
+    plt.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
+
+    # Add the prediction intervals on the right hand plot
+    add_line_to_plot(slope_noise, intercept_noise + PI_noise, 'semilogx', '--', setcolor='0.5')
+    add_line_to_plot(slope_linear, intercept_linear - PI_linear, 'semilogx', '--', setcolor='0.5')
+
+    plt.xlim(xmin=min(x)-max(x)*0.01)  # anchor x and y to 0-ish
+    plt.ylim(ymin=min(y)-max(y)*0.01, ymax=(max(y))*1.01)
+
+    plt.show()
+    # save the figure
+    # add legend with LOD and LOQ values
+    #legend = plt.legend(loc=9, bbox_to_anchor=(0, -0.21, 1., .102), ncol=2)
+    #plt.savefig(os.path.join(output_dir, peptide + '.png'),
+    #            bbox_extra_artists=(legend,), bbox_inches='tight', pad_inches=0.25)
+    plt.close()
+
 
 
 
@@ -829,23 +971,20 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     # TODO REPLACE WITH .iloc
     subset['curvepoint'] = subset['curvepoint'].astype(str)  # back to string
 
-    # STATSMODELS piecewise linear regression
-    f2 = smf.ols(formula='y ~ x + x1 + x2', data=pd.DataFrame([x,y]).T).fit()
-    dtest['f2_pred'] = f2.predict()
-    # print f2.summary()
-
     # set up the model and the parameters
     ## yang's lmfit
     result, mini = fit_by_lmfit_yang(x,y)
     slope_noise = 0.0
-    intercept_noise = result.params['c'].value
     slope_linear = result.params['a'].value
     intercept_linear = result.params['b'].value
+    intercept_noise = result.params['c'].value
 
-    #ci = conf_interval(mini, result, sigmas=[0.674])
-    #ci = conf_interval(mini, result)
-    #print ci
-    #printfuncs.report_ci(ci)
+    predint_eachx = pd.DataFrame([])
+    x_i = np.linspace(min(x), max(x), num=100, dtype=float)
+    for i in np.unique(x_i):
+        predint_eachx = predint_eachx.append(bootstrap_pi(subset, result, new_x=i, bootreps=100))
+    print predint_eachx
+
 
     '''## my original fit
     result = fit_by_scipy(x, y)
@@ -864,9 +1003,26 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
 
     LOD, LOQ, PI_noise, PI_linear = calculate_fom(model_parameters, subset, result)
 
+    # STATSMODELS piecewise linear regression
+    # requires dataframe with y, x_noise, x_linear values
+    #x1 = np.where(x > LOD, , 0)
+    #dtest = pd.DataFrame([y, x, x1]).T
+    #dtest.columns = ['y', 'x', 'x1']
+
+    #f2 = smf.ols(formula='y ~ x_noise + x_linear', data=pd.DataFrame([x,y]).T).fit()
+    #dtest['f2_pred'] = f2.predict()
+    # print f2.summary()
+
+    #mod_wls = sm.WLS(y, x, weights=(1./(np.asarray(np.sqrt(x), dtype=float)+np.finfo(np.float).eps)))
+    #res_wls = mod_wls.fit()
+    #print(res_wls.summary())
+    #prstd, iv_l, iv_u = wls_prediction_std(res_wls)
+
+
     if plot_or_not == 'y':
         # make a plot of the curve points and the fit, in both linear and log space
-        build_plots(x, y, model_parameters, LOD, LOQ)
+        #build_plots(x, y, model_parameters, LOD, LOQ)
+        build_plots(x, y, model_parameters, LOD, LOQ, predint_eachx)
 
     # make a dataframe row with the peptide and its figures of merit
     new_row = [peptide, LOD, LOQ, slope_linear, intercept_linear, intercept_noise, PI_noise, PI_linear]
