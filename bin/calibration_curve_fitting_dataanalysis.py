@@ -350,6 +350,35 @@ def fit_by_lmfit_yang(x, y):
 
 
 # find the intersection of the noise and linear regime
+def calculate_lod(model_params, df):
+
+    m_noise, b_noise, m_linear, b_linear = model_params
+
+    # calculate the standard deviation for the noise segment
+    intersection = (b_linear - b_noise) / (m_noise - m_linear); #print intersection
+    std_noise = np.std(df['area'].loc[(df['curvepoint'].astype(float) < intersection)]); #print "var_noise: ", var_noise
+
+    if m_linear < 0:  # catch edge cases where there is only noise in the curve
+        LOD = float('Inf')
+    else:
+        LOD = (b_linear - b_noise - std_noise) / (m_noise - m_linear)
+
+    # LOD edge cases
+    curve_points = set(list(df['curvepoint']))
+    curve_points.remove(min(curve_points))
+    curve_points.remove(max(curve_points))  # now max is 2nd highest point
+    if LOD > max(x):  # if the intersection is higher than the top point of the curve or is a negative number,
+        lod_results = [float('Inf'), float('Inf')]
+    elif LOD < float(min(curve_points)):  # if there's not at least two points below the LOD
+        lod_results = [float('Inf'), float('Inf')]
+
+    lod_results = [LOD, std_noise]
+
+
+    return lod_results
+
+
+# find the intersection of the noise and linear regime
 def calculate_fom(model_params, df, boot_results):
 
     m_noise, b_noise, m_linear, b_linear = model_params
@@ -394,11 +423,12 @@ def calculate_fom(model_params, df, boot_results):
 # determine prediction interval by bootstrapping
 def bootstrap_pi(df, new_x, bootreps=100):
 
-    def predict_using_newx(new_df, new_x):
-        boot_x = np.array(new_df['curvepoint'], dtype=float)
-        boot_y = np.array(new_df['area'], dtype=float)
-        fit_result, mini_result = fit_by_lmfit_yang(boot_x, boot_y)
-        new_y = float('Inf')  # initialize new_y as inf until assigned otherwise
+    def bootstrap_once(df, new_x, iter):
+
+        resampled_df = df.sample(n=len(df), replace=True); #print resampled_df.head()
+        boot_x = np.array(resampled_df['curvepoint'], dtype=float)
+        boot_y = np.array(resampled_df['area'], dtype=float)
+        fit_result, mini_result = fit_by_lmfit_yang(boot_x, boot_y); #print fit_result.params.pretty_print()
         new_intersection = float('Inf')
 
         if fit_result.params['a'].value > 0:
@@ -406,30 +436,53 @@ def bootstrap_pi(df, new_x, bootreps=100):
             # consider some special edge cases
             if new_intersection > max(boot_x):  # if the intersection is higher than the top point of the curve or is a negative number,
                 new_intersection = float('Inf')  # then replace it with a value (Inf) indicating such
+                #sys.stderr.write("Intersection greater than max boot_x.\n")
             elif new_intersection < 0.:  # if the intersection is less than zero
                 new_intersection = float('Inf')  # then replace it with a value (Inf) indicating such
+                #sys.stderr.write("Intersection less than zero.\n")
 
-        if new_x <= new_intersection:  # if the new_x is in the noise,
-            new_y = fit_result.params['c'].value
-        elif new_x > new_intersection:
-            new_y = (fit_result.params['a'].value * new_x) + fit_result.params['b'].value
+        #print new_intersection
+        yresults = []
+        for i in new_x:
+            if i <= new_intersection:  # if the new_x is in the noise,
+                pred_y = fit_result.params['c'].value
+            elif i > new_intersection:
+                pred_y = (fit_result.params['a'].value * i) + fit_result.params['b'].value
+            yresults.append(pred_y)
 
-        return new_y
+        iter_results = pd.DataFrame(data={'boot_x': new_x, iter: yresults})
+
+        return iter_results
 
     # Bootstrap the data (e.g. resample the data with replacement)
-    # get the regression prediction (new_y) at point new_x
-    pred = []
+    # get the regression prediction (new_y) at each new_x
+    boot_results = pd.DataFrame(data={'boot_x': new_x})
     for i in range(bootreps):
-        resampled_df = df.sample(n=len(df), replace=True); #print sorted(list(resampled_df['curvepoint']))
-        p = predict_using_newx(resampled_df, new_x)
-        pred.append(p)
+        iteration_results = bootstrap_once(df, new_x, i); #print iteration_results
+        boot_results = pd.merge(boot_results, iteration_results, on='boot_x')
+
+    # reshape the bootstrap results to be columns=boot_x and rows=boot_y results (each iteration is a row)
+    boot_results = boot_results.T; #print boot_results.head()
+    boot_results.columns = boot_results.iloc[0]; #print boot_results.head()
+    boot_results = boot_results.drop(['boot_x'], axis='rows')
+    boot_results.to_csv(path_or_buf=os.path.join(output_dir,
+                                                 'bootstrapresults_' + str(list(set(df['peptide']))[0]) + '.csv'),
+                        index=True)
 
     # calculate lower and upper 95% PI
-    pred_df = pd.DataFrame([pred], [new_x]); #print pred_df.T.head()
-    predint_row = ((pred_df.T).describe(percentiles=[.05, .95])).T
-    predint_row['boot_x'] = predint_row.index;  #print predint_row
+    boot_summary = (boot_results.describe(percentiles=[.05, .95])).T
+    boot_summary['boot_x'] = boot_summary.index; #print boot_results
+    #boot_summary['numpy_std'] = np.std(boot_results, axis=0, ddof=1)
 
-    return predint_row
+    # calculate the bootstrapped CV
+    boot_summary['boot_cv'] = boot_summary['std']/boot_summary['mean']
+    #boot_summary['boot_cv_numpystd'] = boot_summary['numpy_std']/boot_summary['mean']
+
+    boot_summary.to_csv(path_or_buf=os.path.join(output_dir,
+                                                 'bootstrapsummary_'+str(list(set(df['peptide']))[0])+'.csv'),
+                     index=True)
+
+    return boot_summary
 
 
 # TEST PLOTS WITH BOOTSTRAPPED PREDINT'S PLOTTED
@@ -595,25 +648,23 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
 
     model_parameters = np.asarray([slope_noise, intercept_noise, slope_linear, intercept_linear])
 
+    lod_vals = calculate_lod(model_parameters, subset)
+    LOD, PI_noise = lod_vals
+
     # calculate the prediction intervals for X bins over the linear range (default bins=10)
-    bootstrap_eachx = pd.DataFrame([])
     # x_i: # of "new" concentration points to calculate y for (make this user-defined?)
-    x_i = np.linspace(min(x), max(x), num=len(np.unique(x)), dtype=float)
-    for i in np.unique(x_i):
-        # bootreps: number of times to do the bootstrapping for each new x-point
-        bootstrap_eachx = bootstrap_eachx.append(bootstrap_pi(subset, new_x=i, bootreps=100))
+    x_i_noise = np.linspace(min(x), LOD, num=len([val for val in x if val < LOD]), dtype=float)
+    x_i_linear = np.linspace(LOD, max(x), num=len([val for val in x if val > LOD]), dtype=float)
+    x_i = np.unique((np.concatenate((x_i_noise, x_i_linear), axis=None))); #print x_i
+    # bootreps: number of times to do the bootstrapping for each new x-point
+    bootstrap_df = bootstrap_pi(subset, new_x=x_i, bootreps=100)
 
-    # calculate the bootstrapped CV
-    bootstrap_eachx['boot_cv'] = bootstrap_eachx['std']/bootstrap_eachx['mean']
-    bootstrap_eachx.to_csv(path_or_buf=os.path.join(output_dir, 'bootstrapresults_'+peptide+'.csv'),
-                     index=True)
-
-    fom = calculate_fom(model_parameters, subset, bootstrap_eachx); #print fom
+    fom = calculate_fom(model_parameters, subset, bootstrap_df); #print fom
     LOD, LOQ, PI_noise, PI_linear = fom
 
     if plot_or_not == 'y':
         # make a plot of the curve points and the fit, in both linear and log space
-        build_plots(x, y, model_parameters, LOD, LOQ, PI_noise, bootstrap_eachx)
+        build_plots(x, y, model_parameters, LOD, LOQ, PI_noise, bootstrap_df)
 
     # make a dataframe row with the peptide and its figures of merit
     new_row = [peptide, LOD, LOQ, slope_linear, intercept_linear, intercept_noise, PI_noise, PI_linear]

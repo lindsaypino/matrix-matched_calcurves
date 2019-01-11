@@ -68,7 +68,7 @@ def associate_multiplier(df, multiplier_file):
 
 # calculate %CV (= std/mean) for a given set of data
 def calculate_oneCV(subset_df):
-    std = np.std(subset_df['area'])
+    std = np.std(subset_df['area'], ddof=1)  # setting "ddof" to 1 for sample std (default ddof=0 for population std)
     mean = np.mean(subset_df['area'])
     if mean != 0:
         cv = float((std / mean) * 100)
@@ -78,6 +78,8 @@ def calculate_oneCV(subset_df):
         # std = 0
         # mean = 0
         # why is this precursor even in the dataset??
+
+    sys.stderr.write("std: %f // mean: %f // ddof= %d\n" % (std, mean, (len(subset_df['area'])-1) ) )
 
     return cv
 
@@ -104,7 +106,7 @@ def calculate_LOQ_byCV(df):
         # subset the subset dataframe for each curve point
         for point in subset_df['curvepoint'].unique():
             # subset the subset dataframe for each curve point
-            subsubset_df = subset_df.loc[(subset_df['curvepoint']) == point]
+            subsubset_df = subset_df.loc[(subset_df['curvepoint']) == point]; print point
 
             # calculate the CV for the curve point
             cv = calculate_oneCV(subsubset_df)
