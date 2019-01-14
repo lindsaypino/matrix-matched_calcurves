@@ -106,7 +106,7 @@ def calculate_LOQ_byCV(df):
         # subset the subset dataframe for each curve point
         for point in subset_df['curvepoint'].unique():
             # subset the subset dataframe for each curve point
-            subsubset_df = subset_df.loc[(subset_df['curvepoint']) == point]; print point
+            subsubset_df = subset_df.loc[(subset_df['curvepoint']) == point]
 
             # calculate the CV for the curve point
             cv = calculate_oneCV(subsubset_df)
@@ -118,10 +118,10 @@ def calculate_LOQ_byCV(df):
             this_peptides_CVs = this_peptides_CVs.append(new_df_row)
 
         # sort by curvepoint
-        this_peptides_CVs = this_peptides_CVs.sort_values(by='curvepoint', ascending=True)
+        this_peptides_CVs = this_peptides_CVs.sort_values(by='curvepoint', ascending=True); print this_peptides_CVs.head()
         curvepoints = this_peptides_CVs['curvepoint'].unique().tolist()
 
-        # move down the curve points from highest to lowest, checking the
+        # move down the curve points from lowest to highest, checking the
         # cv at each to find the lowest consecutive point with <= 20% CV
         loq = np.nan
         for i in curvepoints:
