@@ -384,21 +384,21 @@ def calculate_fom(model_params, df, boot_results):
     m_noise, b_noise, m_linear, b_linear = model_params
 
     # calculate the standard deviation for the noise segment
-    intersection = (b_linear - b_noise) / (m_noise - m_linear); #print intersection
-    std_noise = np.std(df['area'].loc[(df['curvepoint'].astype(float) < intersection)]); #print "var_noise: ", var_noise
+    intersection = (b_linear - b_noise) / (m_noise - m_linear)
+    std_noise = np.std(df['area'].loc[(df['curvepoint'].astype(float) < intersection)])
 
     if m_linear < 0:  # catch edge cases where there is only noise in the curve
         LOD = float('Inf')
     else:
         LOD = (b_linear - b_noise - std_noise) / (m_noise - m_linear)
 
-    #sys.stderr.write("b_noise = %f; std_noise = %f; LOD = %f\n" % (b_noise, std_noise, LOD) )
-
     # LOD edge cases
     curve_points = set(list(df['curvepoint']))
     curve_points.remove(min(curve_points))
     curve_points.remove(max(curve_points))  # now max is 2nd highest point
-    if LOD > max(x):  # if the intersection is higher than the top point of the curve or is a negative number,
+
+    # consider some edge cases
+    if LOD > max(x):  # if the LOD is above the highest concentration point
         fom_results = [float('Inf'), float('Inf'), float('Inf'), float('Inf')]
         return fom_results
     elif LOD < float(min(curve_points)):  # if there's not at least two points below the LOD
@@ -425,21 +425,20 @@ def bootstrap_pi(df, new_x, bootreps=100):
 
     def bootstrap_once(df, new_x, iter):
 
-        resampled_df = df.sample(n=len(df), replace=True); #print resampled_df.head()
+        resampled_df = df.sample(n=len(df), replace=True);
         boot_x = np.array(resampled_df['curvepoint'], dtype=float)
         boot_y = np.array(resampled_df['area'], dtype=float)
-        fit_result, mini_result = fit_by_lmfit_yang(boot_x, boot_y); #print fit_result.params.pretty_print()
+        fit_result, mini_result = fit_by_lmfit_yang(boot_x, boot_y)
         new_intersection = float('Inf')
 
         if fit_result.params['a'].value > 0:
             new_intersection = (fit_result.params['b'].value - fit_result.params['c'].value) / (0. - fit_result.params['a'].value)
+
             # consider some special edge cases
-            if new_intersection > max(boot_x):  # if the intersection is higher than the top point of the curve or is a negative number,
-                new_intersection = float('Inf')  # then replace it with a value (Inf) indicating such
-                #sys.stderr.write("Intersection greater than max boot_x.\n")
-            elif new_intersection < 0.:  # if the intersection is less than zero
-                new_intersection = float('Inf')  # then replace it with a value (Inf) indicating such
-                #sys.stderr.write("Intersection less than zero.\n")
+            if new_intersection > max(boot_x):
+                new_intersection = float('Inf')
+            elif new_intersection < 0.:
+                new_intersection = float('Inf')
 
         #print new_intersection
         yresults = []
@@ -454,29 +453,41 @@ def bootstrap_pi(df, new_x, bootreps=100):
 
         return iter_results
 
-    # Bootstrap the data (e.g. resample the data with replacement)
-    # get the regression prediction (new_y) at each new_x
-    boot_results = pd.DataFrame(data={'boot_x': new_x})
-    for i in range(bootreps):
-        iteration_results = bootstrap_once(df, new_x, i); #print iteration_results
-        boot_results = pd.merge(boot_results, iteration_results, on='boot_x')
+    #print df.head()
+    #print new_x
+    if not df.size or len(new_x) < 1:
+        boot_summary = pd.DataFrame({'boot_x': [],
+                                    'count':[],
+                                    'mean':[],
+                                    'std':[],
+                                    'min':[],
+                                    '5%':[],
+                                    '50%':[],
+                                    '95%':[],
+                                    'max':[],
+                                    'boot_cv':[]})
 
-    # reshape the bootstrap results to be columns=boot_x and rows=boot_y results (each iteration is a row)
-    boot_results = boot_results.T; #print boot_results.head()
-    boot_results.columns = boot_results.iloc[0]; #print boot_results.head()
-    boot_results = boot_results.drop(['boot_x'], axis='rows')
-    boot_results.to_csv(path_or_buf=os.path.join(output_dir,
-                                                 'bootstrapresults_' + str(list(set(df['peptide']))[0]) + '.csv'),
-                        index=True)
+    else:
+        # Bootstrap the data (e.g. resample the data with replacement), eval prediction (new_y) at each new_x
+        boot_results = pd.DataFrame(data={'boot_x': new_x})
+        for i in range(bootreps):
+            iteration_results = bootstrap_once(df, new_x, i)
+            boot_results = pd.merge(boot_results, iteration_results, on='boot_x')
 
-    # calculate lower and upper 95% PI
-    boot_summary = (boot_results.describe(percentiles=[.05, .95])).T
-    boot_summary['boot_x'] = boot_summary.index; #print boot_results
-    #boot_summary['numpy_std'] = np.std(boot_results, axis=0, ddof=1)
+        # reshape the bootstrap results to be columns=boot_x and rows=boot_y results (each iteration is a row)
+        boot_results = boot_results.T
+        boot_results.columns = boot_results.iloc[0]
+        boot_results = boot_results.drop(['boot_x'], axis='rows')
+        boot_results.to_csv(path_or_buf=os.path.join(output_dir,
+                                                     'bootstrapresults_' + str(list(set(df['peptide']))[0]) + '.csv'),
+                            index=True)
 
-    # calculate the bootstrapped CV
-    boot_summary['boot_cv'] = boot_summary['std']/boot_summary['mean']
-    #boot_summary['boot_cv_numpystd'] = boot_summary['numpy_std']/boot_summary['mean']
+        # calculate lower and upper 95% PI
+        boot_summary = (boot_results.describe(percentiles=[.05, .95])).T
+        boot_summary['boot_x'] = boot_summary.index
+
+        # calculate the bootstrapped CV
+        boot_summary['boot_cv'] = boot_summary['std']/boot_summary['mean']
 
     boot_summary.to_csv(path_or_buf=os.path.join(output_dir,
                                                  'bootstrapsummary_'+str(list(set(df['peptide']))[0])+'.csv'),
@@ -651,15 +662,15 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     lod_vals = calculate_lod(model_parameters, subset)
     LOD, PI_noise = lod_vals
 
-    # calculate the prediction intervals for X bins over the linear range (default bins=10)
+    # calculate the prediction intervals for X bins over the linear range (default bins=100)
     # x_i: # of "new" concentration points to calculate y for (make this user-defined?)
     x_i_noise = np.linspace(min(x), LOD, num=len([val for val in x if val < LOD]), dtype=float)
     x_i_linear = np.linspace(LOD, max(x), num=len([val for val in x if val > LOD]), dtype=float)
-    x_i = np.unique((np.concatenate((x_i_noise, x_i_linear), axis=None))); #print x_i
+    x_i = np.unique((np.concatenate((x_i_noise, x_i_linear), axis=None)))
+
     # bootreps: number of times to do the bootstrapping for each new x-point
     bootstrap_df = bootstrap_pi(subset, new_x=x_i, bootreps=100)
-
-    fom = calculate_fom(model_parameters, subset, bootstrap_df); #print fom
+    fom = calculate_fom(model_parameters, subset, bootstrap_df)
     LOD, LOQ, PI_noise, PI_linear = fom
 
     if plot_or_not == 'y':
