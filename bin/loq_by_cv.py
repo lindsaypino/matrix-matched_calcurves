@@ -103,8 +103,9 @@ def calculate_LOQ_byCV(df):
         # empty dataframe to store this peptides CVs
         this_peptides_CVs = pd.DataFrame(columns=cv_colnames)
 
-        # subset the subset dataframe for each curve point
+        # calculate points' CV
         for point in subset_df['curvepoint'].unique():
+
             # subset the subset dataframe for each curve point
             subsubset_df = subset_df.loc[(subset_df['curvepoint']) == point]
 
@@ -118,11 +119,11 @@ def calculate_LOQ_byCV(df):
             this_peptides_CVs = this_peptides_CVs.append(new_df_row)
 
         # sort by curvepoint
-        this_peptides_CVs = this_peptides_CVs.sort_values(by='curvepoint', ascending=True); print this_peptides_CVs.head()
+        this_peptides_CVs = this_peptides_CVs.sort_values(by='curvepoint', ascending=True)
         curvepoints = this_peptides_CVs['curvepoint'].unique().tolist()
 
         # move down the curve points from lowest to highest, checking the
-        # cv at each to find the lowest consecutive point with <= 20% CV
+        # cv at each to find the lowest point with <= 20% CV
         loq = np.nan
         for i in curvepoints:
             if this_peptides_CVs.loc[this_peptides_CVs['curvepoint'] == i, '%CV'].iloc[0] <= 20:
@@ -133,7 +134,6 @@ def calculate_LOQ_byCV(df):
         new_loq_row = pd.DataFrame([[peptide, loq]], columns=loq_colnames)
         peptideLOQs = peptideLOQs.append(new_loq_row)
 
-        #this_peptides_CVs.to_csv(os.path.join(output_dir, "./peptidecvs.csv"), index=False)
 
     peptideLOQs.to_csv(os.path.join(output_dir, "./loqsbycv.csv"), index=False)
     peptideCVs.to_csv(os.path.join(output_dir, "./peptidecvs.csv"), index=False)
