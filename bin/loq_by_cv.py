@@ -5,6 +5,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import argparse
+plt.style.use('seaborn-whitegrid')
 
 # detect whether the file is Encyclopedia output or Skyline report, then read it in appropriately
 def read_input(filename, col_conc_map_file):
@@ -66,12 +67,13 @@ def associate_multiplier(df, multiplier_file):
 
     return multiplied_df
 
+
 # calculate %CV (= std/mean) for a given set of data
 def calculate_oneCV(subset_df):
     std = np.std(subset_df['area'], ddof=1)  # setting "ddof" to 1 for sample std (default ddof=0 for population std)
     mean = np.mean(subset_df['area'])
     if mean != 0:
-        cv = float((std / mean) * 100)
+        cv = float((std / mean))
     else:
         cv = np.nan  # TODO what does it mean to have a mean = 0?
         # the only precursor with this problem is LTDFENLKNEYSK_2
@@ -79,9 +81,8 @@ def calculate_oneCV(subset_df):
         # mean = 0
         # why is this precursor even in the dataset??
 
-    sys.stderr.write("std: %f // mean: %f // ddof= %d\n" % (std, mean, (len(subset_df['area'])-1) ) )
-
     return cv
+
 
 # calculate LOQs from CVs for all peptides using the CV dataframe created above
 def calculate_LOQ_byCV(df):
@@ -121,12 +122,13 @@ def calculate_LOQ_byCV(df):
         # sort by curvepoint
         this_peptides_CVs = this_peptides_CVs.sort_values(by='curvepoint', ascending=True)
         curvepoints = this_peptides_CVs['curvepoint'].unique().tolist()
+        curvepoints = [x for x in curvepoints if x > 0]
 
         # move down the curve points from lowest to highest, checking the
         # cv at each to find the lowest point with <= 20% CV
         loq = np.nan
         for i in curvepoints:
-            if this_peptides_CVs.loc[this_peptides_CVs['curvepoint'] == i, '%CV'].iloc[0] <= 20:
+            if this_peptides_CVs.loc[this_peptides_CVs['curvepoint'] == i, '%CV'].iloc[0] <= 0.2:
                 loq = i  # loq is lowest point with <= 20% cv
                 break
 
@@ -145,8 +147,9 @@ def calculate_LOQ_byCV(df):
 
     return loq_byCV_df
 
+
 # create the plots showing area and CV values
-def make_plot(df):
+def make_plotSAVE(df):
     x = df['curvepoint']
     y = df['area']
     cv = df['%CV']
@@ -204,6 +207,70 @@ def make_plot(df):
     plt.savefig(os.path.join(output_dir, peptide + '.png'),
                 bbox_extra_artists=(legend,), bbox_inches='tight')
     plt.close()
+
+def make_plot(df):
+
+    x = df['curvepoint']
+    y = df['area']
+    cv = df['%CV']
+    LOQ = df['loq'].unique().item()
+    peptide = df['peptide'].unique().item()
+
+    plt.figure(figsize=(5, 7))
+    plt.suptitle(peptide, fontsize="large")
+
+
+    ###
+    ### top plot: linear scale x axis
+    plt.subplot(2, 1, 1)
+    plt.plot(x, y, 'o')  # scatterplot of the data
+
+    plt.axvline(x=LOQ,
+                color='c',
+                label=('LOQ = %.3e' % LOQ))
+
+    plt.ylabel("signal")
+
+    # force axis ticks to be scientific notation so the plot is prettier
+    plt.ticklabel_format(style='sci', axis='both', scilimits=(0, 0))
+
+    plt.xlim(xmin=min(x)-max(x)*0.01)  # anchor x and y to 0-ish
+    plt.ylim(ymin=min(y)-max(y)*0.01, ymax=(max(y))*1.05)
+
+
+    ###
+    ### bottom plot: CVs for each point
+    plt.subplot(2, 1, 2)
+    plt.plot(x, cv, marker='x', color='k', label='_nolegend_', linestyle='None')
+
+    plt.axvline(x=LOQ,
+                color='c',
+                label=('LOQ = %.3e' % LOQ))
+
+    # add 20%CV reference line
+    plt.axhline(y=0.20, color='r', linestyle='dashed')
+
+    #plt.title(peptide, y=1.08)
+    plt.xlabel("curve point")
+    plt.ylabel("CV")
+
+    # force y axis ticks to be scientific notation so the plot is prettier (x is already semilog)
+
+    plt.xlim(xmin=min(x)-max(x)*0.01)  # anchor x and y to 0-ish.
+    if len(cv) > 0:
+        plt.ylim(ymin=-0.01,
+                 ymax=(max(cv)*1.05))
+
+    # save the figure
+    # add legend with LOD and LOQ values
+    legend = plt.legend(loc=8, bbox_to_anchor=(0, -0.5, 1., .102), ncol=2)
+    plt.savefig(os.path.join(output_dir, peptide + '.png'),
+                bbox_extra_artists=(legend,),
+                bbox_inches='tight', pad_inches=0.5)
+    #plt.show()
+    plt.close()
+
+
 
 if __name__ == "__main__":
 

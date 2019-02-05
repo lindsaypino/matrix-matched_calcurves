@@ -9,6 +9,7 @@ import scipy
 from tqdm import tqdm
 import argparse
 from lmfit import Minimizer, Parameters
+plt.style.use('seaborn-whitegrid')
 
 
 
@@ -89,7 +90,6 @@ def fit_by_lmfit_yang(x, y):
         mean_y = subsetdf.groupby('curvepoint')['area'].mean()  # find the mean response area for each curve point
 
         # find the top point, second-top point, and bottom points of the curve data
-        # conc_list = list(pd.to_numeric(subsetdf['curvepoint'].drop_duplicates()))
         conc_list = list(set(x))
         top_point = max(conc_list)
         conc_list.remove(top_point)
@@ -112,9 +112,9 @@ def fit_by_lmfit_yang(x, y):
     params = Parameters()
     initial_a, initial_b, initial_c = initialize_params(x,y)
     initial_cminusb = initial_c - initial_b
-    params.add('a', value=initial_a, min=0, vary=True)
-    params.add('b', value=initial_b, vary=True)
-    params.add('c_minus_b', value=initial_cminusb, min=np.finfo(np.float).eps, vary=True)
+    params.add('a', value=initial_a, min=0.0, vary=True)  # slope linear
+    params.add('b', value=initial_b, vary=True)  # intercept linear
+    params.add('c_minus_b', value=initial_cminusb, min=0.0, vary=True)
     params.add('c', expr='b + c_minus_b')
 
     weights = np.minimum(1/(np.asarray(np.sqrt(x), dtype=float)+np.finfo(np.float).eps), 1000)  # inverse weights
@@ -128,7 +128,7 @@ def fit_by_lmfit_yang(x, y):
 
 
 # find the intersection of the noise and linear regime
-def calculate_lod(model_params, df):
+def calculate_lod(model_params, df, std_mult):
 
     m_noise, b_noise, m_linear, b_linear = model_params
 
@@ -139,7 +139,7 @@ def calculate_lod(model_params, df):
     if m_linear < 0:  # catch edge cases where there is only noise in the curve
         LOD = float('Inf')
     else:
-        LOD = (b_linear - b_noise - std_noise) / (m_noise - m_linear)
+        LOD = (b_noise + (std_mult*std_noise) - b_linear)/m_linear
     lod_results = [LOD, std_noise]
 
     # LOD edge cases
@@ -182,11 +182,11 @@ def calculate_loq(model_params, boot_results, cv_thresh=0.2):
 
 
 # determine prediction interval by bootstrapping
-def bootstrap_pi(df, new_x, bootreps=100):
+def bootstrap_many(df, new_x, bootreps=100):
 
     def bootstrap_once(df, new_x, iter):
 
-        resampled_df = df.sample(n=len(df), replace=True);
+        resampled_df = df.sample(n=len(df), replace=True)
         boot_x = np.array(resampled_df['curvepoint'], dtype=float)
         boot_y = np.array(resampled_df['area'], dtype=float)
         fit_result, mini_result = fit_by_lmfit_yang(boot_x, boot_y)
@@ -201,20 +201,20 @@ def bootstrap_pi(df, new_x, bootreps=100):
             elif new_intersection < 0.:
                 new_intersection = float('Inf')
 
-        #print new_intersection
         yresults = []
         for i in new_x:
-            if i <= new_intersection:  # if the new_x is in the noise,
+            if np.isnan(i):
+                pred_y = np.nan
+            elif i <= new_intersection:  # if the new_x is in the noise,
                 pred_y = fit_result.params['c'].value
             elif i > new_intersection:
                 pred_y = (fit_result.params['a'].value * i) + fit_result.params['b'].value
             yresults.append(pred_y)
-
         iter_results = pd.DataFrame(data={'boot_x': new_x, iter: yresults})
 
         return iter_results
 
-    if not df.size or len(new_x) < 1:
+    if not df.size or np.isnan(new_x).any():
         boot_summary = pd.DataFrame({'boot_x': [],
                                     'count':[],
                                     'mean':[],
@@ -231,15 +231,13 @@ def bootstrap_pi(df, new_x, bootreps=100):
         boot_results = pd.DataFrame(data={'boot_x': new_x})
         for i in range(bootreps):
             iteration_results = bootstrap_once(df, new_x, i)
+
             boot_results = pd.merge(boot_results, iteration_results, on='boot_x')
 
         # reshape the bootstrap results to be columns=boot_x and rows=boot_y results (each iteration is a row)
         boot_results = boot_results.T
         boot_results.columns = boot_results.iloc[0]
         boot_results = boot_results.drop(['boot_x'], axis='rows')
-        #boot_results.to_csv(path_or_buf=os.path.join(output_dir,
-        #                                             'bootstrapresults_' + str(list(set(df['peptide']))[0]) + '.csv'),
-        #                    index=True)
 
         # calculate lower and upper 95% PI
         boot_summary = (boot_results.describe(percentiles=[.05, .95])).T
@@ -250,15 +248,15 @@ def bootstrap_pi(df, new_x, bootreps=100):
 
     boot_summary.to_csv(path_or_buf=os.path.join(output_dir,
                                                  'bootstrapsummary_'+str(list(set(df['peptide']))[0])+'.csv'),
-                     index=True)
+                        index=True)
 
     return boot_summary
 
 
 # plot results
-def build_plots(x, y, model_results, boot_results):
+def build_plots(x, y, model_results, boot_results, std_mult):
 
-    plt.figure(figsize=(10, 5))
+    plt.figure(figsize=(5, 7))
     plt.suptitle(peptide, fontsize="large")
 
     slope_noise, intercept_noise, slope_linear, intercept_linear, LOD, std_noise, LOQ = model_results
@@ -277,12 +275,15 @@ def build_plots(x, y, model_results, boot_results):
             plt.plot(x_vals, y_vals, linestyle=setstyle, color=setcolor)
 
     ###
-    ### left hand plot: linear scale x axis
-    plt.subplot(1, 2, 1)
+    ### top plot: linear scale x axis
+    plt.subplot(2, 1, 1)
     plt.plot(x, y, 'o')  # scatterplot of the data
-    plt.plot(boot_results['boot_x'], (boot_results['mean']-boot_results['std']), 'x')
+    #plt.plot(boot_results['boot_x'], (boot_results['mean']-boot_results['std']), 'x')
+    plt.fill_between(boot_results['boot_x'],
+                     boot_results['mean']-boot_results['std'], boot_results['mean']+boot_results['std'],
+                     color='y', alpha=0.3)
     add_line_to_plot(slope_noise, intercept_noise, 'linear', '-', 'g')  # add noise segment line
-    add_line_to_plot(slope_noise, (intercept_noise + std_noise), 'linear', '--', setcolor='0.5')
+    add_line_to_plot(slope_noise, (intercept_noise + (std_mult*std_noise)), 'linear', '--', setcolor='0.5')
     if slope_linear > 0:  # add linear segment line
         add_line_to_plot(slope_linear, intercept_linear, 'linear', '-', 'g')
 
@@ -294,27 +295,19 @@ def build_plots(x, y, model_results, boot_results):
                 color='c',
                 label=('LOQ = %.3e' % LOQ))
 
-    #plt.title(peptide, y=1.08)
-    plt.xlabel("curve point")
-    plt.ylabel("area")
+    plt.ylabel("signal")
 
     # force axis ticks to be scientific notation so the plot is prettier
     plt.ticklabel_format(style='sci', axis='both', scilimits=(0, 0))
 
     plt.xlim(xmin=min(x)-max(x)*0.01)  # anchor x and y to 0-ish
-    plt.ylim(ymin=min(y)-max(y)*0.01, ymax=(max(y))*1.01)
+    plt.ylim(ymin=min(y)-max(y)*0.01, ymax=(max(y))*1.05)
 
 
     ###
-    ### right hand plot: zoom in on LOD/LOQ scaled x axis
-    plt.subplot(1, 2, 2)
-    plt.semilogx(x, y, 'o')
-    plt.semilogx(boot_results['boot_x'], (boot_results['mean']-boot_results['std']), 'x')
-    add_line_to_plot(slope_noise, intercept_noise, 'semilogx', '-', 'g')
-    add_line_to_plot(slope_noise, (intercept_noise + std_noise), 'semilogx', '--', setcolor='0.5')
-
-    if slope_linear > 0:
-        add_line_to_plot(slope_linear, intercept_linear, 'semilogx', '-', 'g')
+    ### bottom plot: bootstrapped CVs for discretized points
+    plt.subplot(2, 1, 2)
+    plt.plot(boot_results['boot_x'], boot_results['boot_cv'], marker='x', color='k', label='_nolegend_')
 
     plt.axvline(x=LOD,
                 color='m',
@@ -324,25 +317,28 @@ def build_plots(x, y, model_results, boot_results):
                 color='c',
                 label=('LOQ = %.3e' % LOQ))
 
+    # add 20%CV reference line
+    plt.axhline(y=0.20, color='r', linestyle='dashed')
+
     #plt.title(peptide, y=1.08)
-    plt.xlabel("curve point (log10)")
-    plt.ylabel("area")
+    plt.xlabel("curve point")
+    plt.ylabel("CV")
 
     # force y axis ticks to be scientific notation so the plot is prettier (x is already semilog)
-    plt.ticklabel_format(style='sci', axis='y', scilimits=(0, 0))
 
-    plt.xlim(xmin=min(x)-max(x)*0.01)  # anchor x and y to 0-ish
-    plt.ylim(ymin=min(y)-max(y)*0.01, ymax=(max(y))*1.01)
+    plt.xlim(xmin=min(x)-max(x)*0.01)  # anchor x and y to 0-ish.
+    if len(boot_results['boot_cv']) > 0:
+        plt.ylim(ymin=-0.01,
+                 ymax=(max(boot_results['boot_cv']))*1.05)
 
-    #plt.show()
     # save the figure
     # add legend with LOD and LOQ values
-    #legend = plt.legend(loc=9, bbox_to_anchor=(0, -0.21, 1., .102), ncol=2)
+    legend = plt.legend(loc=8, bbox_to_anchor=(0, -0.5, 1., .102), ncol=2)
     plt.savefig(os.path.join(output_dir, peptide + '.png'),
-                #bbox_extra_artists=(legend,),
-                bbox_inches='tight', pad_inches=0.25)
+                bbox_extra_artists=(legend,),
+                bbox_inches='tight', pad_inches=0.5)
+    #plt.show()
     plt.close()
-
 
 
 
@@ -359,6 +355,9 @@ parser.add_argument('curve_data', type=str,
 parser.add_argument('filename_concentration_map', type=str,
                     help='a comma-delimited file containing maps between filenames and the concentration point \
                             they represent (two columns named "filename" and "concentration")')
+parser.add_argument('--std_mult', default=3, type=float,
+                    help='specify a multiplier of the standard deviation of the noise for determining limit of \
+                    detection (LOD) (Note: this must be a value greater than or equal to 3)')
 parser.add_argument('--cv_thresh', default=0.2, type=float,
                     help='specify a coefficient of variation threshold for determining limit of quantitation (LOQ) \
                             (Note: this should be a decimal, not a percentage, e.g. 20%CV threshold should be input as \
@@ -378,6 +377,7 @@ args = parser.parse_args()
 raw_file = args.curve_data
 col_conc_map_file = args.filename_concentration_map
 cv_thresh = args.cv_thresh
+std_mult = args.std_mult
 multiplier_file = args.multiplier_file
 output_dir = args.output_path
 plot_or_not = args.plot
@@ -393,7 +393,6 @@ if multiplier_file:
 peptide_fom = pd.DataFrame(columns=['peptide', 'LOD', 'LOQ',
                                     'slope_linear', 'intercept_linear', 'intercept_noise',
                                     'stdev_noise'])
-peptide_nan = 0
 
 # and awwaayyyyy we go~
 for peptide in tqdm(quant_df_melted['peptide'].unique()):
@@ -401,7 +400,6 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     subset = quant_df_melted.loc[(quant_df_melted['peptide'] == peptide)]  # subset the dataframe for that peptide
 
     if subset.empty:  # if the peptide is nan, skip it and move on to the next peptide
-        peptide_nan += 1
         continue
 
     # sort the dataframe with x values in strictly ascending order
@@ -423,24 +421,21 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
 
     model_parameters = np.asarray([slope_noise, intercept_noise, slope_linear, intercept_linear])
 
-    lod_vals = calculate_lod(model_parameters, subset)
+    lod_vals = calculate_lod(model_parameters, subset, std_mult)
     LOD, std_noise = lod_vals
     model_parameters = np.append(model_parameters, lod_vals)
 
-    # calculate the prediction intervals for X bins over the linear range (default bins=100)
-    # x_i: # of "new" concentration points to calculate y for (make this user-defined?)
-    x_i_noise = np.linspace(min(x), LOD, num=len([val for val in x if val < LOD]), dtype=float)
-    x_i_linear = np.linspace(LOD, max(x), num=len([val for val in x if val > LOD]), dtype=float)
-    x_i = np.unique((np.concatenate((x_i_noise, x_i_linear), axis=None)))
+    # calculate coefficients of variation for discrete bins over the linear range (default bins=100)
+    x_i = np.linspace(LOD, max(x), num=100, dtype=float)
 
-    # bootreps: number of times to do the bootstrapping for each new x-point
-    bootstrap_df = bootstrap_pi(subset, new_x=x_i, bootreps=100)
+    # bootreps: number of times to do the bootstrapping for each new x-point (default 100)
+    bootstrap_df = bootstrap_many(subset, new_x=x_i, bootreps=100)
     LOQ = calculate_loq(model_parameters, bootstrap_df, cv_thresh)
     model_parameters = np.append(model_parameters, LOQ)
 
     if plot_or_not == 'y':
         # make a plot of the curve points and the fit, in both linear and log space
-        build_plots(x, y, model_parameters, bootstrap_df)
+        build_plots(x, y, model_parameters, bootstrap_df, std_mult)
 
     # make a dataframe row with the peptide and its figures of merit
     new_row = [peptide, LOD, LOQ, slope_linear, intercept_linear, intercept_noise, std_noise]
