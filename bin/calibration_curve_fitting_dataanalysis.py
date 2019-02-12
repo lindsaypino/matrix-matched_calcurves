@@ -8,10 +8,12 @@ import matplotlib.pyplot as plt
 import scipy
 from tqdm import tqdm
 import argparse
+import random
 from lmfit import Minimizer, Parameters
 plt.style.use('seaborn-whitegrid')
 
-
+np.random.seed(8888)
+random.seed(8888)
 
 # detect whether the file is Encyclopedia output or Skyline report, then read it in appropriately
 def read_input(filename, col_conc_map_file):
@@ -37,10 +39,13 @@ def read_input(filename, col_conc_map_file):
         sys.stdout.write("Input identified as Skyline export filetype. \n")
 
         df_melted = pd.read_csv(filename, sep=None, engine="python")  # read in the csv
+        df_melted.rename(columns={'File Name': 'filename'}, inplace=True)
+        col_conc_map = pd.read_csv(col_conc_map_file, sep=',', engine="python")
+
+        # remove any data for which there isn't a map key
+        df_melted = df_melted[df_melted['filename'].isin(col_conc_map['filename'])]
 
         # map filenames to concentrations
-        col_conc_map = pd.read_csv(col_conc_map_file, sep=',', engine="python")
-        df_melted.rename(columns={'File Name': 'filename'}, inplace=True)
         df_melted = pd.merge(df_melted, col_conc_map, on='filename', how='outer')
 
         # clean up column names to match downstream convention
@@ -256,8 +261,20 @@ def bootstrap_many(df, new_x, bootreps=100):
 # plot results
 def build_plots(x, y, model_results, boot_results, std_mult):
 
+    SMALL_SIZE = 18
+    MEDIUM_SIZE = 20
+    BIGGER_SIZE = 22
+
+    plt.rc('font', size=SMALL_SIZE)  # controls default text sizes
+    plt.rc('axes', titlesize=SMALL_SIZE)  # fontsize of the axes title
+    plt.rc('axes', labelsize=MEDIUM_SIZE)  # fontsize of the x and y labels
+    plt.rc('xtick', labelsize=SMALL_SIZE)  # fontsize of the tick labels
+    plt.rc('ytick', labelsize=SMALL_SIZE)  # fontsize of the tick labels
+    plt.rc('legend', fontsize=SMALL_SIZE)  # legend fontsize
+    plt.rc('figure', titlesize=BIGGER_SIZE)  # fontsize of the figure title
+
     plt.figure(figsize=(5, 7))
-    plt.suptitle(peptide, fontsize="large")
+    plt.suptitle(peptide)
 
     slope_noise, intercept_noise, slope_linear, intercept_linear, LOD, std_noise, LOQ = model_results
 
@@ -278,7 +295,6 @@ def build_plots(x, y, model_results, boot_results, std_mult):
     ### top plot: linear scale x axis
     plt.subplot(2, 1, 1)
     plt.plot(x, y, 'o')  # scatterplot of the data
-    #plt.plot(boot_results['boot_x'], (boot_results['mean']-boot_results['std']), 'x')
     plt.fill_between(boot_results['boot_x'],
                      boot_results['mean']-boot_results['std'], boot_results['mean']+boot_results['std'],
                      color='y', alpha=0.3)
@@ -321,10 +337,11 @@ def build_plots(x, y, model_results, boot_results, std_mult):
     plt.axhline(y=0.20, color='r', linestyle='dashed')
 
     #plt.title(peptide, y=1.08)
-    plt.xlabel("curve point")
+    plt.xlabel("quantity")
     plt.ylabel("CV")
 
-    # force y axis ticks to be scientific notation so the plot is prettier (x is already semilog)
+    # force axis ticks to be scientific notation so the plot is prettier
+    plt.ticklabel_format(style='sci', axis='x', scilimits=(0, 0))
 
     plt.xlim(xmin=min(x)-max(x)*0.01)  # anchor x and y to 0-ish.
     if len(boot_results['boot_cv']) > 0:
@@ -333,10 +350,10 @@ def build_plots(x, y, model_results, boot_results, std_mult):
 
     # save the figure
     # add legend with LOD and LOQ values
-    legend = plt.legend(loc=8, bbox_to_anchor=(0, -0.5, 1., .102), ncol=2)
+    legend = plt.legend(loc=8, bbox_to_anchor=(0, -.75, 1., .102), ncol=2)
     plt.savefig(os.path.join(output_dir, peptide + '.png'),
                 bbox_extra_artists=(legend,),
-                bbox_inches='tight', pad_inches=0.5)
+                bbox_inches='tight', pad_inches=0.75)
     #plt.show()
     plt.close()
 
