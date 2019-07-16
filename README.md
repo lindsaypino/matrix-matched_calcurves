@@ -36,26 +36,32 @@ fitted piecewise linear regression.
 - `--std_mult`, default=2, type=float,
 'specify a multiplier of the standard deviation of the noise for
 determining limit of detection (LOD)'
+
 - `--cv_thresh`, default=0.2, type=float,
 'specify a coefficient of variation threshold for determining limit of
 quantitation (LOQ) (Note: this should be a decimal, not a percentage,
 e.g. 20% CV threshold should be input as 0.2)'
+
 - `--bootreps`, default=100, type=int,
 'specify a number of times to bootstrap the data (Note: this must be an
 integer, e.g. to resample the data 100 times, the parameter value
 should be input as 100'
+
 - `--multiplier_file`, type=str,
 'use a single-point multiplier associated with the curve data peptides'
+
 - `--output_path`, default=os.getcwd(), type=str,
 'specify an output path for figures of merit and plots'
+
 - `--plot`, default='y', type=str,
 'yes/no (y/n) to create individual calibration curve plots for each
 peptide'
+
 - `--verbose`, default='n', type=str,
 'output a detailed summary of the bootstrapping step'
 
 
 **EXAMPLE.**
 ```python
-python bin\calibration_curve_fitting_dataanalysis.py data\one_protein.csv data\filename2concentration.csv --multiplier_file data\multiplier_file.csv
+python bin\calculate-loq.py data\one_protein.csv data\filename2concentration.csv --multiplier_file data\multiplier_file.csv
 ```
