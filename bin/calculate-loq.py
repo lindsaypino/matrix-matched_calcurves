@@ -58,8 +58,37 @@ def read_input(filename, col_conc_map_file):
 
         df_melted['area'].fillna(0, inplace=True)  # replace NA with 0
 
+    # dia-nn output
+    elif 'Stripped.Sequence' in header_line:
+        sys.stdout.write('Input identified as DIA-NN *.pr_matrix.tsv filetype.\n')
+
+        df = pd.read_table(filename, sep=None, engine='python')
+        df = df.drop(['Protein.Group',
+            'Protein.Ids',
+            'Protein.Names',
+            'Genes',
+            'First.Protein.Description',
+            'Proteotypic',
+            'Stripped.Sequence',
+            'Precursor.Charge',
+            'Precursor.Id'], 1)  # make a quantitative df with just curve points and peptides
+        col_conc_map = pd.read_csv(col_conc_map_file)
+        df = df.rename(columns=col_conc_map.set_index('filename')['concentration'])  # map filenames to concentrations
+        df = df.rename(columns={'Modified.Sequence': 'peptide'})
+        df_melted = pd.melt(df, id_vars=['peptide'])
+        df_melted.columns = ['peptide', 'curvepoint', 'area']
+        df_melted = df_melted[df_melted['curvepoint'].isin(col_conc_map['concentration'])]
+
+        # remove colons in Unimod description, e.g. "AAVDC(UniMod:4)EC(UniMod:4)EFQNLEHNEK.png"
+        df_melted['peptide'] = df_melted['peptide'].str.replace(':', '')
+        #print(df_melted.head())
+
     # convert the curve points to numbers so that they sort correctly
     df_melted['curvepoint'] = pd.to_numeric(df_melted['curvepoint'])
+
+    # replace NaN values with zero
+    # TODO: is this appropriate? it's required for lmfit in any case
+    df_melted['area'] = df_melted['area'].fillna(0)
 
     return df_melted
 
@@ -120,7 +149,7 @@ def fit_by_lmfit_yang(x, y):
     params.add('c_minus_b', value=initial_cminusb, min=0.0, vary=True)
     params.add('c', expr='b + c_minus_b')
 
-    weights = np.minimum(1 / (np.asarray(np.sqrt(x), dtype=float)+np.finfo(np.float).eps), 1000)  # inverse weights
+    weights = np.minimum(1 / (np.asarray(np.sqrt(x), dtype=float)+np.finfo(float).eps), 1000)  # inverse weights
     minner = Minimizer(fcn2min, params, fcn_args=(x, y, weights))
     result = minner.minimize()
 
@@ -157,7 +186,7 @@ def calculate_lod(model_params, df, std_mult):
 # find the intersection of the noise and linear regime
 def calculate_loq(model_params, boot_results, cv_thresh=0.2):
 
-    # initialize the known LOD and a "blank" LOQ
+    # initialize the known LOD and a 'blank' LOQ
     LOD = model_params[4]
     LOQ = float('Inf')
 
@@ -327,7 +356,7 @@ def build_plots(x, y, model_results, boot_results, std_mult):
     plt.xlim(xmin=min(x)-max(x)*0.01)  # anchor x and y to 0-ish.
     if len(boot_results['boot_cv']) > 0:
         plt.ylim(ymin=-0.01,
-                 ymax=(max(boot_results['boot_cv']))*1.05)
+                 ymax=(max(boot_results['boot_cv']*1.05)))
 
     # save the figure
     # add legend with LOD and LOQ values
@@ -441,7 +470,13 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
 
     if plot_or_not == 'y':
         # make a plot of the curve points and the fit, in both linear and log space
-        build_plots(x, y, model_parameters, bootstrap_df, std_mult)
+        #build_plots(x, y, model_parameters, bootstrap_df, std_mult)
+        try:
+            build_plots(x, y, model_parameters, bootstrap_df, std_mult)
+            continue
+        except ValueError:
+            sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
+
 
     # make a dataframe row with the peptide and its figures of merit
     new_row = [peptide, LOD, LOQ, slope_linear, intercept_linear, intercept_noise, std_noise]
