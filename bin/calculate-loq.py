@@ -473,7 +473,7 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
         #build_plots(x, y, model_parameters, bootstrap_df, std_mult)
         try:
             build_plots(x, y, model_parameters, bootstrap_df, std_mult)
-            continue
+            #continue
         except ValueError:
             sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
 
