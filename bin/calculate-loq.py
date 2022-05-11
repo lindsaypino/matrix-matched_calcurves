@@ -14,10 +14,15 @@ plt.style.use('seaborn-whitegrid')
 np.random.seed(8888)
 random.seed(8888)
 
+# Force warnings (other than FutureWarning) to kill the script; this allows debugging numpy warnings.
+#import warnings
+#warnings.simplefilter("error")
+#warnings.simplefilter("ignore", FutureWarning)
+
 # detect whether the file is Encyclopedia output or Skyline report, then read it in appropriately
 def read_input(filename, col_conc_map_file):
-
-    header_line = open(filename, 'r').readline()
+    with open(filename, 'r') as f:
+        header_line = f.readline()
 
     # if numFragments is a column, it's an Encyclopedia file
     if 'numFragments' in header_line:
@@ -162,10 +167,13 @@ def calculate_lod(model_params, df, std_mult):
     m_noise, b_noise, m_linear, b_linear = model_params
 
     # calculate the standard deviation for the noise segment
-    intersection = (b_linear-b_noise) / (m_noise-m_linear)
+    if (m_noise - m_linear) == 0:
+        intersection = np.inf
+    else:
+        intersection = (b_linear-b_noise) / (m_noise-m_linear)
     std_noise = np.std(df['area'].loc[(df['curvepoint'].astype(float) < intersection)])
 
-    if m_linear < 0:  # catch edge cases where there is only noise in the curve
+    if m_linear <= 0:  # catch edge cases where there is only noise in the curve
         LOD = float('Inf')
     else:
         LOD = (b_noise + (std_mult*std_noise) - b_linear) / m_linear
@@ -456,7 +464,7 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     model_parameters = np.append(model_parameters, lod_vals)
 
     # calculate coefficients of variation for discrete bins over the linear range (default bins=100)
-    x_i = np.linspace(LOD, max(x), num=100, dtype=float)
+    x_i = np.linspace(LOD if np.isfinite(LOD) else min(x), max(x), num=100, dtype=float)
 
     bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps)
 
