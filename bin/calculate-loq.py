@@ -422,7 +422,7 @@ if multiplier_file:
 # initialize empty data frame to store figures of merit
 peptide_fom = pd.DataFrame(columns=['peptide', 'LOD', 'LOQ',
                                     'slope_linear', 'intercept_linear', 'intercept_noise',
-                                    'stdev_noise'])
+                                    'stndev_noise'])
 
 # and awwaayyyyy we go~
 for peptide in tqdm(quant_df_melted['peptide'].unique()):
