@@ -7,6 +7,7 @@ import sys
 sys.path.append("bin")
 
 import importlib
+import numpy as np
 import pytest
 import subprocess
 
@@ -40,7 +41,8 @@ def bench_process_nonquant_peptide(calculate_loq, subset):
         subset,
         False
     )
-    print(result_row)
+
+    assert np.isinf(result_row["LOD"]), "Got LOD for non-quantitative peptide!!"
 
 
 def test_bench_process_nonquant_peptide(benchmark, mock_dataset):

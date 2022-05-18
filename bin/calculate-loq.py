@@ -411,6 +411,7 @@ def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_m
         bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps)
 
         if verbose == 'y':
+            # TODO: this line appears to be very buggy
             boot_summary.to_csv(path_or_buf=os.path.join(output_dir,
                                                          'bootstrapsummary_' + str(list(set(df['peptide']))[0]) + '.csv'),
                                 index=True)
