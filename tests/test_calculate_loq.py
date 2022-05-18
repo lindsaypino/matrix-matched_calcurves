@@ -42,7 +42,7 @@ def bench_process_nonquant_peptide(calculate_loq, subset):
         False
     )
 
-    assert np.isinf(result_row["LOD"]), "Got LOD for non-quantitative peptide!!"
+    assert np.isinf(result_row.iloc[0]["LOD"]), "Got LOD for non-quantitative peptide!!"
 
 
 def test_bench_process_nonquant_peptide(benchmark, mock_dataset):

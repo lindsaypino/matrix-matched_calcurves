@@ -1,5 +1,4 @@
-
-
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import os
 import sys
@@ -9,6 +8,7 @@ from tqdm import tqdm
 import argparse
 import random
 from lmfit import Minimizer, Parameters
+
 plt.style.use('seaborn-whitegrid')
 
 np.random.seed(8888)
@@ -496,16 +496,21 @@ def main():
                                         'stndev_noise'])
 
     # and awwaayyyyy we go~
-    for peptide in tqdm(quant_df_melted['peptide'].unique()):
+    with ThreadPoolExecutor() as exec:
+        # First, submit each peptide as a job to the executor
+        futures = []
+        for peptide in tqdm(quant_df_melted['peptide'].unique()):
 
-        subset = quant_df_melted.loc[(quant_df_melted['peptide'] == peptide)]  # subset the dataframe for that peptide
+            subset = quant_df_melted.loc[(quant_df_melted['peptide'] == peptide)]  # subset the dataframe for that peptide
 
-        if subset.empty:  # if the peptide is nan, skip it and move on to the next peptide
-            continue
+            if subset.empty:  # if the peptide is nan, skip it and move on to the next peptide
+                continue
 
-        new_df_row = process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, subset, verbose)
+            futures.append(exec.submit(process_peptide, bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, subset, verbose))
 
-        peptide_fom = peptide_fom.append(new_df_row)
+        # Just loop over the resulting futures and build up the results
+        for future in as_completed(futures):
+            peptide_fom = peptide_fom.append(future.result())
 
     peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
                        index=False)
