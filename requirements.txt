@@ -1,0 +1,8 @@
+# requirements.txt - python packages required at runtime
+
+python==3.8
+pandas
+numpy
+lmfit
+matplotlib
+tqdm

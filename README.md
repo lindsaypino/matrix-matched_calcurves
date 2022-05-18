@@ -1,9 +1,9 @@
-**USAGE.**
+## Usage
 
 `calculate-loq  <curve_data> <filename_concentration_map>`
 
 
-**DESCRIPTION.**
+## Description
 
 `calculate-loq` fits a piecewise prediction interval model to calibration
 curve data. A horizontal "noise segment" is fit to model the background
@@ -15,7 +15,7 @@ which are then used to calculate a coefficient of variation and
 therefore an LOQ.
 
 
-**INPUT REQUIREMENTS.**
+## Input Requirements
 
 - `curve_data` – either the Encyclopedia `*.elib.peptides.txt` file or a
 Skyline `\*.csv` custom export with peptides as rows, concentration
@@ -25,7 +25,7 @@ points as columns, and areas as values
 with its corresponding concentration point in a second column.
 
 
-**OUTPUT.**
+## Output
 
 The program writes files to the folder curvefits-output by default.
 The following files will be created:
@@ -36,7 +36,7 @@ and their calculated LOQ in another.
 - `*.png` – (optional) plots of each peptide calibration curve with the
 fitted piecewise linear regression.
 
-**OPTIONS.**
+## Options
 
 - `--std_mult`, default=2, type=float,
 'specify a multiplier of the standard deviation of the noise for
@@ -66,8 +66,20 @@ peptide'
 'output a detailed summary of the bootstrapping step'
 
 
-**EXAMPLE.**
+## Example
 
 ```python
 python bin\calculate-loq.py data\one_protein.csv data\filename2concentration.csv --multiplier_file data\multiplier_file.csv
+```
+
+## For developers
+
+### Setting up an environment
+
+Use `conda` from anaconda/miniconda.
+
+```shell
+conda create -n matrix-matched-calcurves python=3.8
+conda activate matrix-matched-calcurves
+conda install --file requirements.txt
 ```
