@@ -1,4 +1,4 @@
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
 import os
 import sys
@@ -496,7 +496,7 @@ def main():
                                         'stndev_noise'])
 
     # and awwaayyyyy we go~
-    with ThreadPoolExecutor() as exec:
+    with ProcessPoolExecutor() as exec:
         # First, submit each peptide as a job to the executor
         futures = []
         for peptide in tqdm(quant_df_melted['peptide'].unique()):
