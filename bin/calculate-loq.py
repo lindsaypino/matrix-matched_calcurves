@@ -376,7 +376,7 @@ def build_plots(peptide, x, y, model_results, boot_results, std_mult, output_dir
     plt.close()
 
 
-def process_peptide(bootreps, cv_thresh, output_dir, peptide, peptide_fom, plot_or_not, std_mult, subset, verbose):
+def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, subset, verbose):
     # sort the dataframe with x values in strictly ascending order
     subset = subset.sort_values(by='curvepoint', ascending=True)
 
@@ -429,8 +429,7 @@ def process_peptide(bootreps, cv_thresh, output_dir, peptide, peptide_fom, plot_
                                                   'slope_linear', 'intercept_linear', 'intercept_noise',
                                                   'stndev_noise'])
 
-    peptide_fom = peptide_fom.append(new_df_row)
-    return peptide_fom
+    return new_df_row
 
 
 def main():
@@ -498,8 +497,9 @@ def main():
         if subset.empty:  # if the peptide is nan, skip it and move on to the next peptide
             continue
 
-        peptide_fom = process_peptide(bootreps, cv_thresh, output_dir, peptide, peptide_fom, plot_or_not, std_mult,
-                                      subset, verbose)
+        new_df_row = process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, subset, verbose)
+
+        peptide_fom = peptide_fom.append(new_df_row)
 
     peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
                        index=False)
