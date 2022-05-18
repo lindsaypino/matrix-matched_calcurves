@@ -376,6 +376,63 @@ def build_plots(peptide, x, y, model_results, boot_results, std_mult, output_dir
     plt.close()
 
 
+def process_peptide(bootreps, cv_thresh, output_dir, peptide, peptide_fom, plot_or_not, std_mult, subset, verbose):
+    # sort the dataframe with x values in strictly ascending order
+    subset = subset.sort_values(by='curvepoint', ascending=True)
+
+    # create the x and y arrays
+    x = np.array(subset['curvepoint'], dtype=float)
+    y = np.array(subset['area'], dtype=float)
+
+    # TODO REPLACE WITH .iloc
+    subset['curvepoint'] = subset['curvepoint'].astype(str)  # back to string
+
+    # set up the model and the parameters (yang's lmfit minimize function approach)
+    result, mini = fit_by_lmfit_yang(x, y)
+    slope_noise = 0.0
+    slope_linear = result.params['a'].value
+    intercept_linear = result.params['b'].value
+    intercept_noise = result.params['c'].value
+
+    model_parameters = np.asarray([slope_noise, intercept_noise, slope_linear, intercept_linear])
+
+    lod_vals = calculate_lod(model_parameters, subset, std_mult, x)
+    LOD, std_noise = lod_vals
+
+    model_parameters = np.append(model_parameters, lod_vals)
+
+    # calculate coefficients of variation for discrete bins over the linear range (default bins=100)
+    x_i = np.linspace(LOD if np.isfinite(LOD) else min(x), max(x), num=100, dtype=float)
+
+    bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps)
+
+    if verbose == 'y':
+        boot_summary.to_csv(path_or_buf=os.path.join(output_dir,
+                                                     'bootstrapsummary_' + str(list(set(df['peptide']))[0]) + '.csv'),
+                            index=True)
+
+    LOQ = calculate_loq(model_parameters, bootstrap_df, cv_thresh)
+    model_parameters = np.append(model_parameters, LOQ)
+
+    if plot_or_not == 'y':
+        # make a plot of the curve points and the fit, in both linear and log space
+        # build_plots(x, y, model_parameters, bootstrap_df, std_mult)
+        try:
+            build_plots(peptide, x, y, model_parameters, bootstrap_df, std_mult, output_dir)
+            # continue
+        except ValueError:
+            sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
+
+    # make a dataframe row with the peptide and its figures of merit
+    new_row = [peptide, LOD, LOQ, slope_linear, intercept_linear, intercept_noise, std_noise]
+    new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ',
+                                                  'slope_linear', 'intercept_linear', 'intercept_noise',
+                                                  'stndev_noise'])
+
+    peptide_fom = peptide_fom.append(new_df_row)
+    return peptide_fom
+
+
 def main():
     # usage statement and input descriptions
     parser = argparse.ArgumentParser(
@@ -441,58 +498,8 @@ def main():
         if subset.empty:  # if the peptide is nan, skip it and move on to the next peptide
             continue
 
-        # sort the dataframe with x values in strictly ascending order
-        subset = subset.sort_values(by='curvepoint', ascending=True)
-
-        # create the x and y arrays
-        x = np.array(subset['curvepoint'], dtype=float)
-        y = np.array(subset['area'], dtype=float)
-
-        # TODO REPLACE WITH .iloc
-        subset['curvepoint'] = subset['curvepoint'].astype(str)  # back to string
-
-        # set up the model and the parameters (yang's lmfit minimize function approach)
-        result, mini = fit_by_lmfit_yang(x,y)
-        slope_noise = 0.0
-        slope_linear = result.params['a'].value
-        intercept_linear = result.params['b'].value
-        intercept_noise = result.params['c'].value
-
-        model_parameters = np.asarray([slope_noise, intercept_noise, slope_linear, intercept_linear])
-
-        lod_vals = calculate_lod(model_parameters, subset, std_mult, x)
-        LOD, std_noise = lod_vals
-        model_parameters = np.append(model_parameters, lod_vals)
-
-        # calculate coefficients of variation for discrete bins over the linear range (default bins=100)
-        x_i = np.linspace(LOD if np.isfinite(LOD) else min(x), max(x), num=100, dtype=float)
-
-        bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps)
-
-        if verbose == 'y':
-            boot_summary.to_csv(path_or_buf=os.path.join(output_dir,
-                                                         'bootstrapsummary_' + str(list(set(df['peptide']))[0]) + '.csv'),
-                                index=True)
-
-        LOQ = calculate_loq(model_parameters, bootstrap_df, cv_thresh)
-        model_parameters = np.append(model_parameters, LOQ)
-
-        if plot_or_not == 'y':
-            # make a plot of the curve points and the fit, in both linear and log space
-            #build_plots(x, y, model_parameters, bootstrap_df, std_mult)
-            try:
-                build_plots(peptide, x, y, model_parameters, bootstrap_df, std_mult, output_dir)
-                #continue
-            except ValueError:
-                sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
-
-
-        # make a dataframe row with the peptide and its figures of merit
-        new_row = [peptide, LOD, LOQ, slope_linear, intercept_linear, intercept_noise, std_noise]
-        new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ',
-                                                      'slope_linear', 'intercept_linear', 'intercept_noise',
-                                                      'stndev_noise'])
-        peptide_fom = peptide_fom.append(new_df_row)
+        peptide_fom = process_peptide(bootreps, cv_thresh, output_dir, peptide, peptide_fom, plot_or_not, std_mult,
+                                      subset, verbose)
 
     peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
                        index=False)
