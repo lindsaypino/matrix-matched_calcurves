@@ -376,122 +376,127 @@ def build_plots(x, y, model_results, boot_results, std_mult):
     plt.close()
 
 
-# usage statement and input descriptions
-parser = argparse.ArgumentParser(
-    description='A  model for fitting calibration curve data. Takes calibration curve measurements as input, and \
-                returns the Limit of Detection (LOD) and Limit of Quantitation (LOQ) for each peptide measured in \
-                the calibration curve.',
-    formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+def main():
+    # usage statement and input descriptions
+    parser = argparse.ArgumentParser(
+        description='A  model for fitting calibration curve data. Takes calibration curve measurements as input, and \
+                    returns the Limit of Detection (LOD) and Limit of Quantitation (LOQ) for each peptide measured in \
+                    the calibration curve.',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-parser.add_argument('curve_data', type=str,
-                    help='a matrix containing peptides and their quantitative values across each curve point (currently\
-                            supporting Encyclopedia *.elib.peptides.txt quant reports and Skyline export reports)')
-parser.add_argument('filename_concentration_map', type=str,
-                    help='a comma-delimited file containing maps between filenames and the concentration point \
-                            they represent (two columns named "filename" and "concentration")')
-parser.add_argument('--std_mult', default=2, type=float,
-                    help='specify a multiplier of the standard deviation of the noise for determining limit of \
-                    detection (LOD)')
-parser.add_argument('--cv_thresh', default=0.2, type=float,
-                    help='specify a coefficient of variation threshold for determining limit of quantitation (LOQ) \
-                            (Note: this should be a decimal, not a percentage, e.g. 20%CV threshold should be input as \
-                            0.2)')
-parser.add_argument('--bootreps', default=100, type=int,
-                    help='specify a number of times to bootstrap the data (Note: this must be an integer, e.g. to \
-                            resample the data 100 times, the parameter value should be input as 100')
-parser.add_argument('--multiplier_file', type=str,
-                    help='use a single-point multiplier associated with the curve data peptides')
-parser.add_argument('--output_path', default=os.getcwd(), type=str,
-                    help='specify an output path for figures of merit and plots')
-parser.add_argument('--plot', default='y', type=str,
-                    help='yes/no (y/n) to create individual calibration curve plots for each peptide')
-parser.add_argument('--verbose', default='n', type=str,
-                    help='output a detailed summary of the bootstrapping step')
+    parser.add_argument('curve_data', type=str,
+                        help='a matrix containing peptides and their quantitative values across each curve point (currently\
+                                supporting Encyclopedia *.elib.peptides.txt quant reports and Skyline export reports)')
+    parser.add_argument('filename_concentration_map', type=str,
+                        help='a comma-delimited file containing maps between filenames and the concentration point \
+                                they represent (two columns named "filename" and "concentration")')
+    parser.add_argument('--std_mult', default=2, type=float,
+                        help='specify a multiplier of the standard deviation of the noise for determining limit of \
+                        detection (LOD)')
+    parser.add_argument('--cv_thresh', default=0.2, type=float,
+                        help='specify a coefficient of variation threshold for determining limit of quantitation (LOQ) \
+                                (Note: this should be a decimal, not a percentage, e.g. 20%CV threshold should be input as \
+                                0.2)')
+    parser.add_argument('--bootreps', default=100, type=int,
+                        help='specify a number of times to bootstrap the data (Note: this must be an integer, e.g. to \
+                                resample the data 100 times, the parameter value should be input as 100')
+    parser.add_argument('--multiplier_file', type=str,
+                        help='use a single-point multiplier associated with the curve data peptides')
+    parser.add_argument('--output_path', default=os.getcwd(), type=str,
+                        help='specify an output path for figures of merit and plots')
+    parser.add_argument('--plot', default='y', type=str,
+                        help='yes/no (y/n) to create individual calibration curve plots for each peptide')
+    parser.add_argument('--verbose', default='n', type=str,
+                        help='output a detailed summary of the bootstrapping step')
 
-# parse arguments from command line
-args = parser.parse_args()
-raw_file = args.curve_data
-col_conc_map_file = args.filename_concentration_map
-cv_thresh = args.cv_thresh
-std_mult = args.std_mult
-bootreps = args.bootreps
-multiplier_file = args.multiplier_file
-output_dir = args.output_path
-plot_or_not = args.plot
-verbose = args.verbose
+    # parse arguments from command line
+    args = parser.parse_args()
+    raw_file = args.curve_data
+    col_conc_map_file = args.filename_concentration_map
+    cv_thresh = args.cv_thresh
+    std_mult = args.std_mult
+    bootreps = args.bootreps
+    multiplier_file = args.multiplier_file
+    output_dir = args.output_path
+    plot_or_not = args.plot
+    verbose = args.verbose
 
-# read in the data
-quant_df_melted = read_input(raw_file, col_conc_map_file)
+    # read in the data
+    quant_df_melted = read_input(raw_file, col_conc_map_file)
 
-# associate multiplier with the curvepoint ratio (if there is a multiplier provided)
-if multiplier_file:
-    quant_df_melted = associate_multiplier(quant_df_melted, multiplier_file)
+    # associate multiplier with the curvepoint ratio (if there is a multiplier provided)
+    if multiplier_file:
+        quant_df_melted = associate_multiplier(quant_df_melted, multiplier_file)
 
-# initialize empty data frame to store figures of merit
-peptide_fom = pd.DataFrame(columns=['peptide', 'LOD', 'LOQ',
-                                    'slope_linear', 'intercept_linear', 'intercept_noise',
-                                    'stndev_noise'])
+    # initialize empty data frame to store figures of merit
+    peptide_fom = pd.DataFrame(columns=['peptide', 'LOD', 'LOQ',
+                                        'slope_linear', 'intercept_linear', 'intercept_noise',
+                                        'stndev_noise'])
 
-# and awwaayyyyy we go~
-for peptide in tqdm(quant_df_melted['peptide'].unique()):
+    # and awwaayyyyy we go~
+    for peptide in tqdm(quant_df_melted['peptide'].unique()):
 
-    subset = quant_df_melted.loc[(quant_df_melted['peptide'] == peptide)]  # subset the dataframe for that peptide
+        subset = quant_df_melted.loc[(quant_df_melted['peptide'] == peptide)]  # subset the dataframe for that peptide
 
-    if subset.empty:  # if the peptide is nan, skip it and move on to the next peptide
-        continue
+        if subset.empty:  # if the peptide is nan, skip it and move on to the next peptide
+            continue
 
-    # sort the dataframe with x values in strictly ascending order
-    subset = subset.sort_values(by='curvepoint', ascending=True)
+        # sort the dataframe with x values in strictly ascending order
+        subset = subset.sort_values(by='curvepoint', ascending=True)
 
-    # create the x and y arrays
-    x = np.array(subset['curvepoint'], dtype=float)
-    y = np.array(subset['area'], dtype=float)
+        # create the x and y arrays
+        x = np.array(subset['curvepoint'], dtype=float)
+        y = np.array(subset['area'], dtype=float)
 
-    # TODO REPLACE WITH .iloc
-    subset['curvepoint'] = subset['curvepoint'].astype(str)  # back to string
+        # TODO REPLACE WITH .iloc
+        subset['curvepoint'] = subset['curvepoint'].astype(str)  # back to string
 
-    # set up the model and the parameters (yang's lmfit minimize function approach)
-    result, mini = fit_by_lmfit_yang(x,y)
-    slope_noise = 0.0
-    slope_linear = result.params['a'].value
-    intercept_linear = result.params['b'].value
-    intercept_noise = result.params['c'].value
+        # set up the model and the parameters (yang's lmfit minimize function approach)
+        result, mini = fit_by_lmfit_yang(x,y)
+        slope_noise = 0.0
+        slope_linear = result.params['a'].value
+        intercept_linear = result.params['b'].value
+        intercept_noise = result.params['c'].value
 
-    model_parameters = np.asarray([slope_noise, intercept_noise, slope_linear, intercept_linear])
+        model_parameters = np.asarray([slope_noise, intercept_noise, slope_linear, intercept_linear])
 
-    lod_vals = calculate_lod(model_parameters, subset, std_mult)
-    LOD, std_noise = lod_vals
-    model_parameters = np.append(model_parameters, lod_vals)
+        lod_vals = calculate_lod(model_parameters, subset, std_mult)
+        LOD, std_noise = lod_vals
+        model_parameters = np.append(model_parameters, lod_vals)
 
-    # calculate coefficients of variation for discrete bins over the linear range (default bins=100)
-    x_i = np.linspace(LOD if np.isfinite(LOD) else min(x), max(x), num=100, dtype=float)
+        # calculate coefficients of variation for discrete bins over the linear range (default bins=100)
+        x_i = np.linspace(LOD if np.isfinite(LOD) else min(x), max(x), num=100, dtype=float)
 
-    bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps)
+        bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps)
 
-    if verbose == 'y':
-        boot_summary.to_csv(path_or_buf=os.path.join(output_dir,
-                                                     'bootstrapsummary_' + str(list(set(df['peptide']))[0]) + '.csv'),
-                            index=True)
+        if verbose == 'y':
+            boot_summary.to_csv(path_or_buf=os.path.join(output_dir,
+                                                         'bootstrapsummary_' + str(list(set(df['peptide']))[0]) + '.csv'),
+                                index=True)
 
-    LOQ = calculate_loq(model_parameters, bootstrap_df, cv_thresh)
-    model_parameters = np.append(model_parameters, LOQ)
+        LOQ = calculate_loq(model_parameters, bootstrap_df, cv_thresh)
+        model_parameters = np.append(model_parameters, LOQ)
 
-    if plot_or_not == 'y':
-        # make a plot of the curve points and the fit, in both linear and log space
-        #build_plots(x, y, model_parameters, bootstrap_df, std_mult)
-        try:
-            build_plots(x, y, model_parameters, bootstrap_df, std_mult)
-            #continue
-        except ValueError:
-            sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
+        if plot_or_not == 'y':
+            # make a plot of the curve points and the fit, in both linear and log space
+            #build_plots(x, y, model_parameters, bootstrap_df, std_mult)
+            try:
+                build_plots(x, y, model_parameters, bootstrap_df, std_mult)
+                #continue
+            except ValueError:
+                sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
 
 
-    # make a dataframe row with the peptide and its figures of merit
-    new_row = [peptide, LOD, LOQ, slope_linear, intercept_linear, intercept_noise, std_noise]
-    new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ',
-                                                  'slope_linear', 'intercept_linear', 'intercept_noise',
-                                                  'stndev_noise'])
-    peptide_fom = peptide_fom.append(new_df_row)
+        # make a dataframe row with the peptide and its figures of merit
+        new_row = [peptide, LOD, LOQ, slope_linear, intercept_linear, intercept_noise, std_noise]
+        new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ',
+                                                      'slope_linear', 'intercept_linear', 'intercept_noise',
+                                                      'stndev_noise'])
+        peptide_fom = peptide_fom.append(new_df_row)
 
-peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
-                   index=False)
+    peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
+                       index=False)
+
+
+if __name__ == "__main__":
+    main()
