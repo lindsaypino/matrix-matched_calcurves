@@ -81,5 +81,18 @@ Use `conda` from anaconda/miniconda.
 ```shell
 conda create -n matrix-matched-calcurves python=3.8
 conda activate matrix-matched-calcurves
+
+# Set up runtime requirements
 conda install --file requirements.txt
+```
+
+### Running tests
+
+```shell
+conda activate matrix-matched-calcurves
+
+# Set up development/test requirements
+conda install --file requirements.txt --file tests/requirements.txt
+
+pytest -s tests/
 ```
