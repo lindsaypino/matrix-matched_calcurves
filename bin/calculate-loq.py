@@ -162,7 +162,7 @@ def fit_by_lmfit_yang(x, y):
 
 
 # find the intersection of the noise and linear regime
-def calculate_lod(model_params, df, std_mult):
+def calculate_lod(model_params, df, std_mult, x):
 
     m_noise, b_noise, m_linear, b_linear = model_params
 
@@ -276,7 +276,7 @@ def bootstrap_many(df, new_x, num_bootreps=100):
 
 
 # plot results
-def build_plots(x, y, model_results, boot_results, std_mult):
+def build_plots(peptide, x, y, model_results, boot_results, std_mult, output_dir):
 
     SMALL_SIZE = 18
     MEDIUM_SIZE = 20
@@ -460,7 +460,7 @@ def main():
 
         model_parameters = np.asarray([slope_noise, intercept_noise, slope_linear, intercept_linear])
 
-        lod_vals = calculate_lod(model_parameters, subset, std_mult)
+        lod_vals = calculate_lod(model_parameters, subset, std_mult, x)
         LOD, std_noise = lod_vals
         model_parameters = np.append(model_parameters, lod_vals)
 
@@ -481,7 +481,7 @@ def main():
             # make a plot of the curve points and the fit, in both linear and log space
             #build_plots(x, y, model_parameters, bootstrap_df, std_mult)
             try:
-                build_plots(x, y, model_parameters, bootstrap_df, std_mult)
+                build_plots(peptide, x, y, model_parameters, bootstrap_df, std_mult, output_dir)
                 #continue
             except ValueError:
                 sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
