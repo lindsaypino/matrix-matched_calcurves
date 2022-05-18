@@ -401,17 +401,22 @@ def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_m
 
     model_parameters = np.append(model_parameters, lod_vals)
 
-    # calculate coefficients of variation for discrete bins over the linear range (default bins=100)
-    x_i = np.linspace(LOD if np.isfinite(LOD) else min(x), max(x), num=100, dtype=float)
+    if not np.isfinite(LOD):
+        LOQ = np.inf
+        bootstrap_df = bootstrap_many(subset, [np.nan], num_bootreps=0)  # shortcut to get empty DF
+    else:
+        # calculate coefficients of variation for discrete bins over the linear range (default bins=100)
+        x_i = np.linspace(LOD, max(x), num=100, dtype=float)
 
-    bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps)
+        bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps)
 
-    if verbose == 'y':
-        boot_summary.to_csv(path_or_buf=os.path.join(output_dir,
-                                                     'bootstrapsummary_' + str(list(set(df['peptide']))[0]) + '.csv'),
-                            index=True)
+        if verbose == 'y':
+            boot_summary.to_csv(path_or_buf=os.path.join(output_dir,
+                                                         'bootstrapsummary_' + str(list(set(df['peptide']))[0]) + '.csv'),
+                                index=True)
 
-    LOQ = calculate_loq(model_parameters, bootstrap_df, cv_thresh)
+        LOQ = calculate_loq(model_parameters, bootstrap_df, cv_thresh)
+
     model_parameters = np.append(model_parameters, LOQ)
 
     if plot_or_not == 'y':
