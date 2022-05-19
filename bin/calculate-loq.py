@@ -9,7 +9,7 @@ from tqdm import tqdm
 import argparse
 import random
 from lmfit import Minimizer, Parameters
-from scipy.stats import linregress
+from lmfit.models import LinearModel
 
 plt.style.use('seaborn-whitegrid')
 
@@ -113,6 +113,19 @@ def associate_multiplier(df, multiplier_file):
     return multiplied_df
 
 
+def linregress(data):
+    x = data["curvepoint"]
+    y = data["area"]
+    w = data["weight"]
+
+    model = LinearModel()
+
+    pars = model.guess(y, x=x)
+    result = model.fit(y, pars, x=x, weights=w)
+
+    return result.params["slope"].value, result.params["intercept"].value
+
+
 # yang's solve for the piecewise fit using lmfit Minimize function
 def fit_by_lmfit_yang(x, y):
 
@@ -124,8 +137,8 @@ def fit_by_lmfit_yang(x, y):
         return (model-data) * weight
 
     # parameter initialization
-    def initialize_params(x, y):
-        subsetdf = pd.DataFrame({'curvepoint': pd.to_numeric(x), 'area': y})
+    def initialize_params(x, y, weights):
+        subsetdf = pd.DataFrame({"curvepoint": pd.to_numeric(x), "area": y, "weight": weights})
 
         # Initial guess for where noise is
         curvepoints = list(sorted(subsetdf["curvepoint"].unique()))
@@ -135,22 +148,23 @@ def fit_by_lmfit_yang(x, y):
 
         # Use linear regression above intersection
         reg_data = subsetdf[~noise_mask]
-        linear_slope, linear_intercept, *_ = linregress(reg_data[["curvepoint", "area"]])
+        linear_slope, linear_intercept = linregress(reg_data)
 
         if noise_intercept <= linear_intercept:
             noise_intercept = linear_intercept * 1.05
 
         return linear_slope, linear_intercept, noise_intercept
 
+    weights = np.minimum(1 / (np.asarray(np.sqrt(x), dtype=float)+np.finfo(float).eps), 1000)  # inverse weights
+
     params = Parameters()
-    initial_a, initial_b, initial_c = initialize_params(x,y)
+    initial_a, initial_b, initial_c = initialize_params(x,y,weights)
     initial_cminusb = initial_c - initial_b
     params.add('a', value=initial_a, min=0.0, vary=True)  # slope signal
     params.add('b', value=initial_b, vary=True)  # intercept signal
     params.add('c_minus_b', value=initial_cminusb, min=0.0, vary=True)
     params.add('c', expr='b + c_minus_b')
 
-    weights = np.minimum(1 / (np.asarray(np.sqrt(x), dtype=float)+np.finfo(float).eps), 1000)  # inverse weights
     minner = Minimizer(fcn2min, params, fcn_args=(x, y, weights))
     result = minner.minimize()
 
