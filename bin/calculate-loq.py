@@ -516,7 +516,7 @@ def main():
 
         # Just loop over the resulting futures and build up the results
         for future in as_completed(futures):
-            peptide_fom = peptide_fom.append(future.result())
+            peptide_fom = pd.concat([peptide_fom, future.result()])
 
     peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
                        index=False)
