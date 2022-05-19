@@ -231,25 +231,13 @@ def bootstrap_many(df, new_x, num_bootreps=100):
         boot_x = np.array(resampled_df['curvepoint'], dtype=float)
         boot_y = np.array(resampled_df['area'], dtype=float)
         fit_result, mini_result = fit_by_lmfit_yang(boot_x, boot_y)
-        new_intersection = float('Inf')
 
-        if fit_result.params['a'].value > 0:
-            new_intersection = (fit_result.params['b'].value - fit_result.params['c'].value) /\
-                               (0. - fit_result.params['a'].value)
+        a = fit_result.params['a'].value
+        b = fit_result.params['b'].value
+        c = fit_result.params['c'].value
 
-            # consider some special edge cases
-            if new_intersection > max(boot_x) or new_intersection < 0.:
-                new_intersection = float('Inf')
+        yresults = np.maximum(new_x * a + b, c)
 
-        yresults = []
-        for i in new_x:
-            if np.isnan(i):
-                pred_y = np.nan
-            elif i <= new_intersection:  # if the new_x is in the noise,
-                pred_y = fit_result.params['c'].value
-            elif i > new_intersection:
-                pred_y = (fit_result.params['a'].value*i) + fit_result.params['b'].value
-            yresults.append(pred_y)
         iter_results = pd.DataFrame(data={'boot_x': new_x, iter_num: yresults})
 
         return iter_results
@@ -390,9 +378,6 @@ def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_m
     x = np.array(subset['curvepoint'], dtype=float)
     y = np.array(subset['area'], dtype=float)
 
-    # TODO REPLACE WITH .iloc
-    subset['curvepoint'] = subset['curvepoint'].astype(str)  # back to string
-
     # set up the model and the parameters (yang's lmfit minimize function approach)
     result, mini = fit_by_lmfit_yang(x, y)
     slope_noise = 0.0
@@ -505,10 +490,7 @@ def main():
     with ProcessPoolExecutor() as exec:
         # First, submit each peptide as a job to the executor
         futures = []
-        for peptide in quant_df_melted['peptide'].unique():
-
-            subset = quant_df_melted.loc[(quant_df_melted['peptide'] == peptide)]  # subset the dataframe for that peptide
-
+        for peptide, subset in quant_df_melted.groupby('peptide'):
             if subset.empty:  # if the peptide is nan, skip it and move on to the next peptide
                 continue
 
