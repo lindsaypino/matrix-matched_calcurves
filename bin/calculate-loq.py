@@ -505,7 +505,7 @@ def main():
     with ProcessPoolExecutor() as exec:
         # First, submit each peptide as a job to the executor
         futures = []
-        for peptide in tqdm(quant_df_melted['peptide'].unique()):
+        for peptide in quant_df_melted['peptide'].unique():
 
             subset = quant_df_melted.loc[(quant_df_melted['peptide'] == peptide)]  # subset the dataframe for that peptide
 
@@ -515,7 +515,7 @@ def main():
             futures.append(exec.submit(process_peptide, bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, subset, verbose))
 
         # Just loop over the resulting futures and build up the results
-        for future in as_completed(futures):
+        for future in tqdm(as_completed(futures), total=len(futures)):
             peptide_fom = pd.concat([peptide_fom, future.result()])
 
     peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
