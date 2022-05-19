@@ -51,6 +51,6 @@ def test_bench_process_nonquant_peptide(benchmark, mock_dataset):
     df = calculate_loq.read_input(*mock_dataset)
 
     # Carefully chosen to have no LoD
-    peptide = "RGEGFMVVTATGDNTFVGR"
+    peptide = "YGLNQMADEKESLVVK"
 
     benchmark(bench_process_nonquant_peptide, calculate_loq, df[df["peptide"] == peptide])
