@@ -29,10 +29,16 @@ def read_input(filename, col_conc_map_file):
         sys.stdout.write('Input identified as EncyclopeDIA *.elib.peptides.txt filetype.\n')
 
         df = pd.read_csv(filename, sep=None, engine='python')
-        df = df.drop(['numFragments', 'Protein'], 1)  # make a quantitative df with just curve points and peptides
-        col_conc_map = pd.read_csv(col_conc_map_file)
-        df = df.rename(columns=col_conc_map.set_index('filename')['concentration'])  # map filenames to concentrations
-        df = df.rename(columns={'Peptide': 'peptide'})
+        df.drop(['numFragments', 'Protein'], axis="columns", inplace=True)  # make a quantitative df with just curve points and peptides
+
+        col_conc_map = pd.read_csv(col_conc_map_file, index_col="filename")
+
+        # map filenames to concentrations
+        df.rename(columns=dict(
+            col_conc_map['concentration'],
+            **{'Peptide': 'peptide'}
+        ), inplace=True)
+
         df_melted = pd.melt(df, id_vars=['peptide'])
         df_melted.columns = ['peptide', 'curvepoint', 'area']
         df_melted = df_melted[df_melted['curvepoint'].isin(col_conc_map['concentration'])]
@@ -93,7 +99,7 @@ def read_input(filename, col_conc_map_file):
 
     # replace NaN values with zero
     # TODO: is this appropriate? it's required for lmfit in any case
-    df_melted['area'] = df_melted['area'].fillna(0)
+    df_melted['area'].fillna(0, inplace=True)
 
     return df_melted
 
