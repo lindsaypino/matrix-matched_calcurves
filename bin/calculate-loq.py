@@ -301,7 +301,7 @@ def bootstrap_many(df, new_x, num_bootreps=100):
 
 
 # plot results
-def build_plots(x, y, model_results, boot_results, std_mult):
+def build_plots(peptide, x, y, model_results, boot_results, num_bootreps, std_mult, output_dir):
 
     SMALL_SIZE = 18
     MEDIUM_SIZE = 20
@@ -366,7 +366,28 @@ def build_plots(x, y, model_results, boot_results, std_mult):
     ###
     ### bottom plot: bootstrapped CVs for discretized points
     plt.subplot(2, 1, 2)
-    plt.plot(boot_results['boot_x'], boot_results['boot_cv'], marker='x', color='k', label='_nolegend_')
+    plt.plot(boot_results['boot_x'], boot_results['boot_cv'], marker=None, color='k', label='_nolegend_')
+
+    # plot actual CVs at each curve point
+    df = pd.DataFrame({"curvepoint": x, "area": y})
+
+    # Instead of direct CV, match prediction boostrap and take CV of resampled _means_
+    means = pd.DataFrame()
+    for i in range(num_bootreps):
+        # resample
+        resampled_df = df.sample(n=len(df), replace=True)
+
+        # get the mean for each point
+        resampled_means = resampled_df.groupby("curvepoint").mean()
+
+        # append to frame
+        means = pd.concat([means, resampled_means], axis="rows")
+
+    # Compute the average/std across boostrapped means for each point
+    groups = means.groupby("curvepoint").agg({'area': ["mean", "std"]})
+    cv = groups[("area", "std")] / groups[("area", "mean")]
+
+    plt.scatter(cv.index, cv, marker="o", color="tab:blue", label="_nolegend_")
 
     plt.axvline(x=LOD,
                 color='m',
@@ -389,7 +410,7 @@ def build_plots(x, y, model_results, boot_results, std_mult):
     plt.xlim(xmin=min(x)-max(x)*0.01)  # anchor x and y to 0-ish.
     if len(boot_results['boot_cv']) > 0:
         plt.ylim(ymin=-0.01,
-                 ymax=(max(boot_results['boot_cv']*1.05)))
+                 ymax=(max(boot_results['boot_cv'].max(), cv.max())*1.05))
 
     # save the figure
     # add legend with LOD and LOQ values
@@ -505,7 +526,7 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
         # make a plot of the curve points and the fit, in both linear and log space
         #build_plots(x, y, model_parameters, bootstrap_df, std_mult)
         try:
-            build_plots(x, y, model_parameters, bootstrap_df, std_mult)
+            build_plots(peptide, x, y, model_parameters, bootstrap_df, bootreps, std_mult, output_dir)
             #continue
         except ValueError:
             sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
