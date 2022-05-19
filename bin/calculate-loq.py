@@ -12,6 +12,10 @@ from lmfit import Minimizer, Parameters
 from lmfit.models import LinearModel
 
 plt.style.use('seaborn-v0_8-whitegrid')
+DEFAULT_MIN_LINEAR_POINTS = 1
+DEFAULT_MIN_NOISE_POINTS = 2
+
+plt.style.use('seaborn-whitegrid')
 
 np.random.seed(8888)
 random.seed(8888)
@@ -172,7 +176,7 @@ def fit_by_lmfit_yang(x, y):
 
 
 # find the intersection of the noise and linear regime
-def calculate_lod(model_params, df, std_mult):
+def calculate_lod(model_params, df, std_mult, min_noise_points, min_linear_points):
 
     m_noise, b_noise, m_linear, b_linear = model_params
 
@@ -190,13 +194,13 @@ def calculate_lod(model_params, df, std_mult):
     lod_results = [LOD, std_noise]
 
     # LOD edge cases
-    curve_points = set(list(df['curvepoint']))
-    curve_points.remove(min(curve_points))
-    curve_points.remove(max(curve_points))  # now max is 2nd highest point
-    if LOD > max(x):  # if the intersection is higher than the top point of the curve or is a negative number,
-        lod_results = [float('Inf'), float('Inf')]
-    elif LOD < float(min(curve_points)):  # if there's not at least two points below the LOD
-        lod_results = [float('Inf'), float('Inf')]
+    mask = df["curvepoint"] >= LOD
+    if df["curvepoint"][mask].nunique() < min_linear_points:
+        # if the intersection is higher than the the top point of the curve
+        lod_results = [np.inf, np.inf]
+    elif df["curvepoint"][~mask].nunique() < min_noise_points:
+        # if there's not at least two points below the LOD
+        lod_results = [np.inf, np.inf]
 
     return lod_results
 
@@ -424,6 +428,10 @@ parser.add_argument('--cv_thresh', default=0.2, type=float,
 parser.add_argument('--bootreps', default=100, type=int,
                     help='specify a number of times to bootstrap the data (Note: this must be an integer, e.g. to \
                             resample the data 100 times, the parameter value should be input as 100')
+parser.add_argument('--min_noise_points', default=DEFAULT_MIN_NOISE_POINTS, type=int,
+                        help="specify the minimum required curve points required below the LOD")
+parser.add_argument('--min_linear_points', default=DEFAULT_MIN_LINEAR_POINTS, type=int,
+                    help="specify the minimum required curve points required above the LOD")
 parser.add_argument('--multiplier_file', type=str,
                     help='use a single-point multiplier associated with the curve data peptides')
 parser.add_argument('--output_path', default=os.getcwd(), type=str,
@@ -440,6 +448,8 @@ col_conc_map_file = args.filename_concentration_map
 cv_thresh = args.cv_thresh
 std_mult = args.std_mult
 bootreps = args.bootreps
+min_noise_points = args.min_noise_points
+min_linear_points = args.min_linear_points
 multiplier_file = args.multiplier_file
 output_dir = args.output_path
 plot_or_not = args.plot
@@ -484,7 +494,7 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
 
     model_parameters = np.asarray([slope_noise, intercept_noise, slope_linear, intercept_linear])
 
-    lod_vals = calculate_lod(model_parameters, subset, std_mult)
+    lod_vals = calculate_lod(model_parameters, subset, std_mult, min_noise_points, min_linear_points)
     LOD, std_noise = lod_vals
     model_parameters = np.append(model_parameters, lod_vals)
 
@@ -521,5 +531,5 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
 #   peptide_fom = peptide_fom.append(new_df_row)
     peptide_fom = pd.concat([peptide_fom, new_df_row], ignore_index=True, axis=0)
 
-peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
-                   index=False)
+    peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
+                       index=False)
