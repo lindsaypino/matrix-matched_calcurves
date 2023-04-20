@@ -185,9 +185,14 @@ def calculate_lod(model_params, df, std_mult, min_noise_points, min_linear_point
         intersection = np.inf
     else:
         intersection = (b_linear-b_noise) / (m_noise-m_linear)
+
     std_noise = np.std(df['area'].loc[(df['curvepoint'].astype(float) < intersection)])
 
-    if m_linear <= 0:  # catch edge cases where there is only noise in the curve
+    min_curvepoint = df["curvepoint"].min()
+    if intersection <= min_curvepoint and min_noise_points < 1:
+        LOD = min_curvepoint
+        std_noise = np.nan
+    elif m_linear <= 0:  # catch edge cases where there is only noise in the curve
         LOD = float('Inf')
     else:
         LOD = (b_noise + (std_mult*std_noise) - b_linear) / m_linear
@@ -196,10 +201,10 @@ def calculate_lod(model_params, df, std_mult, min_noise_points, min_linear_point
     # LOD edge cases
     mask = df["curvepoint"] >= LOD
     if df["curvepoint"][mask].nunique() < min_linear_points:
-        # if the intersection is higher than the the top point of the curve
+        # if the intersection is higher than the top point of the curve
         lod_results = [np.inf, np.inf]
     elif df["curvepoint"][~mask].nunique() < min_noise_points:
-        # if there's not at least two points below the LOD
+        # if there's not enough below the LOD
         lod_results = [np.inf, np.inf]
 
     return lod_results
