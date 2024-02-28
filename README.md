@@ -71,3 +71,13 @@ peptide'
 ```python
 python bin\calculate-loq.py data\one_protein.csv data\filename2concentration.csv --multiplier_file data\multiplier_file.csv
 ```
+
+**DOCKER.**
+
+To build with Docker: `docker build -t matrix-matched_calcurves:latest .`
+To run:
+
+
+```bash
+docker run --rm --user $(id -u):$(id -g) -v `pwd`:`pwd` -w `pwd` matrix-matched_calcurves:latest <curve_data> <filename_concentraion_map>
+```
