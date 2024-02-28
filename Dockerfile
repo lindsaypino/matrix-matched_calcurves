@@ -1,5 +1,9 @@
 FROM python:3.9
 
+# Set environment variables for Matplotlib and Fontconfig
+ENV MPLCONFIGDIR=/tmp/matplotlib_cache
+ENV HOME=/tmp/home
+
 ADD bin/* /app/
 ADD requirements.txt /app/
 WORKDIR /app
