@@ -9,7 +9,7 @@ from tqdm import tqdm
 import argparse
 import random
 from lmfit import Minimizer, Parameters
-plt.style.use('seaborn-whitegrid')
+plt.style.use('seaborn-v0_8-whitegrid')
 
 np.random.seed(8888)
 random.seed(8888)
@@ -29,7 +29,7 @@ def read_input(filename, col_conc_map_file):
         sys.stdout.write('Input identified as EncyclopeDIA *.elib.peptides.txt filetype.\n')
 
         df = pd.read_csv(filename, sep=None, engine='python')
-        df = df.drop(['numFragments', 'Protein'], 1)  # make a quantitative df with just curve points and peptides
+        df = df.drop(['numFragments', 'Protein'], axis=1)  # make a quantitative df with just curve points and peptides
         col_conc_map = pd.read_csv(col_conc_map_file)
         df = df.rename(columns=col_conc_map.set_index('filename')['concentration'])  # map filenames to concentrations
         df = df.rename(columns={'Peptide': 'peptide'})
@@ -221,7 +221,13 @@ def bootstrap_many(df, new_x, num_bootreps=100):
 
     def bootstrap_once(df, new_x, iter_num):
 
-        resampled_df = df.sample(n=len(df), replace=True)
+#        resampled_df = df.sample(n=len(df), replace=True)
+
+        while True:
+            resampled_df = df.sample(n=len(df), replace=True)
+            if resampled_df['area'].nunique() > 1:
+                break
+
         boot_x = np.array(resampled_df['curvepoint'], dtype=float)
         boot_y = np.array(resampled_df['area'], dtype=float)
         fit_result, mini_result = fit_by_lmfit_yang(boot_x, boot_y)
@@ -491,7 +497,10 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ',
                                                   'slope_linear', 'intercept_linear', 'intercept_noise',
                                                   'stndev_noise'])
-    peptide_fom = peptide_fom.append(new_df_row)
+    
+
+#   peptide_fom = peptide_fom.append(new_df_row)
+    peptide_fom = pd.concat([peptide_fom, new_df_row], ignore_index=True, axis=0)
 
 peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
                    index=False)
