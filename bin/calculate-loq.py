@@ -212,12 +212,21 @@ def calculate_loq(model_params, boot_results, cv_thresh=0.2):
         LOQ = float('Inf')
     else:
         # subset the bootstrap results for just those values above the LOD
-        boot_subset = boot_results[(boot_results['boot_x']>LOD) & (boot_results['boot_cv']< cv_thresh)]
+        boot_subset = boot_results[(boot_results['boot_x'] > LOD)]
 
-        if boot_subset.empty:
+        # Mask picking out good CVs
+        good_cv = boot_subset["boot_cv"] < cv_thresh
+
+        if 0 == good_cv.sum():
             LOQ = float('Inf')
         else:
-            LOQ = boot_subset['boot_x'].min()
+            # LOQ is the larger of:
+            #   - smallest intensity with good CV
+            #   - largest intensity with bad CV
+            LOQ = max(
+                boot_subset[good_cv]['boot_x'].min(),
+                boot_subset[~good_cv]['boot_x'].max()
+            )
 
             # LOQ edge cases
             if LOQ >= boot_results['boot_x'].max() or LOQ <= 0:
