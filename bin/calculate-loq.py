@@ -8,8 +8,7 @@ from tqdm import tqdm
 import argparse
 import random
 from lmfit import Minimizer, Parameters
-
-plt.style.use('seaborn-whitegrid')
+plt.style.use('seaborn-v0_8-whitegrid')
 
 np.random.seed(8888)
 random.seed(8888)
@@ -227,7 +226,13 @@ def bootstrap_many(df, new_x, num_bootreps=100):
 
     def bootstrap_once(df, new_x, iter_num):
 
-        resampled_df = df.sample(n=len(df), replace=True)
+#        resampled_df = df.sample(n=len(df), replace=True)
+
+        while True:
+            resampled_df = df.sample(n=len(df), replace=True)
+            if resampled_df['area'].nunique() > 1:
+                break
+
         boot_x = np.array(resampled_df['curvepoint'], dtype=float)
         boot_y = np.array(resampled_df['area'], dtype=float)
         fit_result, mini_result = fit_by_lmfit_yang(boot_x, boot_y)
@@ -498,7 +503,7 @@ def main():
 
         # Just loop over the resulting futures and build up the results
         for future in tqdm(as_completed(futures), total=len(futures)):
-            peptide_fom = pd.concat([peptide_fom, future.result()])
+            peptide_fom = pd.concat([peptide_fom, future.result()], ignore_index=True, axis=0)
 
     peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
                        index=False)
