@@ -9,6 +9,8 @@ from tqdm import tqdm
 import argparse
 import random
 from lmfit import Minimizer, Parameters
+from lmfit.models import LinearModel
+
 plt.style.use('seaborn-v0_8-whitegrid')
 
 np.random.seed(8888)
@@ -111,6 +113,19 @@ def associate_multiplier(df, multiplier_file):
     return multiplied_df
 
 
+def linregress(data):
+    x = data["curvepoint"]
+    y = data["area"]
+    w = data["weight"]
+
+    model = LinearModel()
+
+    pars = model.guess(y, x=x)
+    result = model.fit(y, pars, x=x, weights=w)
+
+    return result.params["slope"].value, result.params["intercept"].value
+
+
 # yang's solve for the piecewise fit using lmfit Minimize function
 def fit_by_lmfit_yang(x, y):
 
@@ -122,39 +137,34 @@ def fit_by_lmfit_yang(x, y):
         return (model-data) * weight
 
     # parameter initialization
-    def initialize_params(x, y):
-        subsetdf = pd.DataFrame({'curvepoint': pd.to_numeric(x), 'area': y})
-        mean_y = subsetdf.groupby('curvepoint')['area'].mean()  # find the mean response area for each curve point
+    def initialize_params(x, y, weights):
+        subsetdf = pd.DataFrame({"curvepoint": pd.to_numeric(x), "area": y, "weight": weights})
 
-        # find the top point, second-top point, and bottom points of the curve data
-        conc_list = list(set(x))
-        top_point = max(conc_list)
-        conc_list.remove(top_point)
-        second_top = max(conc_list)
-        bottom_point = min(conc_list)
+        # Initial guess for where noise is
+        curvepoints = list(sorted(subsetdf["curvepoint"].unique()))
+        noise_mask = subsetdf["curvepoint"].apply(lambda x: x in curvepoints[:2])
 
-        # using the means, calculate a slope (y1-y2/x1-x2)
-        linear_slope = (mean_y[second_top]-mean_y[top_point]) / (second_top-top_point)
-        # find the noise intercept using average of bottom three points
-        noise_intercept = mean_y[bottom_point]
-        # find the linear intercept using linear slope (b = y-mx) and the top point
-        linear_intercept = mean_y[top_point] - (linear_slope*top_point)
+        noise_intercept = np.mean(subsetdf["area"][noise_mask])
 
-        # edge case catch?
-        if noise_intercept < linear_intercept:
+        # Use linear regression above intersection
+        reg_data = subsetdf[~noise_mask]
+        linear_slope, linear_intercept = linregress(reg_data)
+
+        if noise_intercept <= linear_intercept:
             noise_intercept = linear_intercept * 1.05
 
         return linear_slope, linear_intercept, noise_intercept
 
+    weights = np.minimum(1 / (np.asarray(np.sqrt(x), dtype=float)+np.finfo(float).eps), 1000)  # inverse weights
+
     params = Parameters()
-    initial_a, initial_b, initial_c = initialize_params(x,y)
+    initial_a, initial_b, initial_c = initialize_params(x,y,weights)
     initial_cminusb = initial_c - initial_b
     params.add('a', value=initial_a, min=0.0, vary=True)  # slope signal
     params.add('b', value=initial_b, vary=True)  # intercept signal
     params.add('c_minus_b', value=initial_cminusb, min=0.0, vary=True)
     params.add('c', expr='b + c_minus_b')
 
-    weights = np.minimum(1 / (np.asarray(np.sqrt(x), dtype=float)+np.finfo(float).eps), 1000)  # inverse weights
     minner = Minimizer(fcn2min, params, fcn_args=(x, y, weights))
     result = minner.minimize()
 
@@ -497,7 +507,7 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ',
                                                   'slope_linear', 'intercept_linear', 'intercept_noise',
                                                   'stndev_noise'])
-    
+
 
 #   peptide_fom = peptide_fom.append(new_df_row)
     peptide_fom = pd.concat([peptide_fom, new_df_row], ignore_index=True, axis=0)
