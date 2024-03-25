@@ -1,0 +1,7 @@
+pandas
+tqdm
+lmfit
+numpy
+matplotlib
+seaborn
+pyarrow
