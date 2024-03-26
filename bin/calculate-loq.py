@@ -301,7 +301,7 @@ def bootstrap_many(df, new_x, num_bootreps=100):
 
 
 # plot results
-def build_plots(x, y, model_results, boot_results, std_mult):
+def build_plots(x, y, model_results, boot_results, std_mult, cv_thresh):
 
     SMALL_SIZE = 18
     MEDIUM_SIZE = 20
@@ -377,7 +377,7 @@ def build_plots(x, y, model_results, boot_results, std_mult):
                 label=('LOQ = %.3e' % LOQ))
 
     # add 20%CV reference line
-    plt.axhline(y=0.20, color='r', linestyle='dashed')
+    plt.axhline(y=cv_thresh, color='r', linestyle='dashed')
 
     #plt.title(peptide, y=1.08)
     plt.xlabel('quantity')
@@ -419,7 +419,7 @@ parser.add_argument('--std_mult', default=2, type=float,
                     detection (LOD)')
 parser.add_argument('--cv_thresh', default=0.2, type=float,
                     help='specify a coefficient of variation threshold for determining limit of quantitation (LOQ) \
-                            (Note: this should be a decimal, not a percentage, e.g. 20%CV threshold should be input as \
+                            (Note: this should be a decimal, not a percentage, e.g. 20%% CV threshold should be input as \
                             0.2)')
 parser.add_argument('--bootreps', default=100, type=int,
                     help='specify a number of times to bootstrap the data (Note: this must be an integer, e.g. to \
@@ -494,8 +494,8 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps)
 
     if verbose == 'y':
-        boot_summary.to_csv(path_or_buf=os.path.join(output_dir,
-                                                     'bootstrapsummary_' + str(list(set(df['peptide']))[0]) + '.csv'),
+        bootstrap_df.to_csv(path_or_buf=os.path.join(output_dir,
+                                                     'bootstrapsummary_' + peptide + '.csv'),
                             index=True)
 
     LOQ = calculate_loq(model_parameters, bootstrap_df, cv_thresh)
@@ -505,7 +505,7 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
         # make a plot of the curve points and the fit, in both linear and log space
         #build_plots(x, y, model_parameters, bootstrap_df, std_mult)
         try:
-            build_plots(x, y, model_parameters, bootstrap_df, std_mult)
+            build_plots(x, y, model_parameters, bootstrap_df, std_mult, cv_thresh)
             #continue
         except ValueError:
             sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
