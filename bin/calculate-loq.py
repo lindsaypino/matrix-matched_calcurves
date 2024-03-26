@@ -494,8 +494,8 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps)
 
     if verbose == 'y':
-        boot_summary.to_csv(path_or_buf=os.path.join(output_dir,
-                                                     'bootstrapsummary_' + str(list(set(df['peptide']))[0]) + '.csv'),
+        bootstrap_df.to_csv(path_or_buf=os.path.join(output_dir,
+                                                     'bootstrapsummary_' + peptide + '.csv'),
                             index=True)
 
     LOQ = calculate_loq(model_parameters, bootstrap_df, cv_thresh)
