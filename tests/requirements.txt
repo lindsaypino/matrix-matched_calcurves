@@ -1,0 +1,6 @@
+# requirements.txt - python packages required at runtime
+#
+# This file will not work with `pip`, instead use `conda`.
+
+pytest=7.1.1
+pytest-benchmark=3.4.1
