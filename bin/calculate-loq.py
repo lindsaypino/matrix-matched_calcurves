@@ -301,7 +301,7 @@ def bootstrap_many(df, new_x, num_bootreps=100):
 
 
 # plot results
-def build_plots(x, y, model_results, boot_results, std_mult):
+def build_plots(x, y, model_results, boot_results, std_mult, cv_thresh):
 
     SMALL_SIZE = 18
     MEDIUM_SIZE = 20
@@ -377,7 +377,7 @@ def build_plots(x, y, model_results, boot_results, std_mult):
                 label=('LOQ = %.3e' % LOQ))
 
     # add 20%CV reference line
-    plt.axhline(y=0.20, color='r', linestyle='dashed')
+    plt.axhline(y=cv_thresh, color='r', linestyle='dashed')
 
     #plt.title(peptide, y=1.08)
     plt.xlabel('quantity')
@@ -505,7 +505,7 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
         # make a plot of the curve points and the fit, in both linear and log space
         #build_plots(x, y, model_parameters, bootstrap_df, std_mult)
         try:
-            build_plots(x, y, model_parameters, bootstrap_df, std_mult)
+            build_plots(x, y, model_parameters, bootstrap_df, std_mult, cv_thresh)
             #continue
         except ValueError:
             sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
