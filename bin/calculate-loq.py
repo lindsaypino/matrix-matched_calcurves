@@ -419,7 +419,7 @@ parser.add_argument('--std_mult', default=2, type=float,
                     detection (LOD)')
 parser.add_argument('--cv_thresh', default=0.2, type=float,
                     help='specify a coefficient of variation threshold for determining limit of quantitation (LOQ) \
-                            (Note: this should be a decimal, not a percentage, e.g. 20%CV threshold should be input as \
+                            (Note: this should be a decimal, not a percentage, e.g. 20%% CV threshold should be input as \
                             0.2)')
 parser.add_argument('--bootreps', default=100, type=int,
                     help='specify a number of times to bootstrap the data (Note: this must be an integer, e.g. to \
