@@ -11,11 +11,10 @@ import random
 from lmfit import Minimizer, Parameters
 from lmfit.models import LinearModel
 
-plt.style.use('seaborn-v0_8-whitegrid')
 DEFAULT_MIN_LINEAR_POINTS = 1
 DEFAULT_MIN_NOISE_POINTS = 2
 
-plt.style.use('seaborn-whitegrid')
+plt.style.use('seaborn-v0_8-whitegrid')
 
 np.random.seed(8888)
 random.seed(8888)
