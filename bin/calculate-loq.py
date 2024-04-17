@@ -1,5 +1,4 @@
-
-
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
 import os
 import sys
@@ -31,10 +30,16 @@ def read_input(filename, col_conc_map_file):
         sys.stdout.write('Input identified as EncyclopeDIA *.elib.peptides.txt filetype.\n')
 
         df = pd.read_csv(filename, sep=None, engine='python')
-        df = df.drop(['numFragments', 'Protein'], axis=1)  # make a quantitative df with just curve points and peptides
-        col_conc_map = pd.read_csv(col_conc_map_file)
-        df = df.rename(columns=col_conc_map.set_index('filename')['concentration'])  # map filenames to concentrations
-        df = df.rename(columns={'Peptide': 'peptide'})
+        df.drop(['numFragments', 'Protein'], axis="columns", inplace=True)  # make a quantitative df with just curve points and peptides
+
+        col_conc_map = pd.read_csv(col_conc_map_file, index_col="filename")
+
+        # map filenames to concentrations
+        df.rename(columns=dict(
+            col_conc_map['concentration'],
+            **{'Peptide': 'peptide'}
+        ), inplace=True)
+
         df_melted = pd.melt(df, id_vars=['peptide'])
         df_melted.columns = ['peptide', 'curvepoint', 'area']
         df_melted = df_melted[df_melted['curvepoint'].isin(col_conc_map['concentration'])]
@@ -95,7 +100,7 @@ def read_input(filename, col_conc_map_file):
 
     # replace NaN values with zero
     # TODO: is this appropriate? it's required for lmfit in any case
-    df_melted['area'] = df_melted['area'].fillna(0)
+    df_melted['area'].fillna(0, inplace=True)
 
     return df_melted
 
@@ -172,7 +177,7 @@ def fit_by_lmfit_yang(x, y):
 
 
 # find the intersection of the noise and linear regime
-def calculate_lod(model_params, df, std_mult):
+def calculate_lod(model_params, df, std_mult, x):
 
     m_noise, b_noise, m_linear, b_linear = model_params
 
@@ -250,25 +255,13 @@ def bootstrap_many(df, new_x, num_bootreps=100):
         boot_x = np.array(resampled_df['curvepoint'], dtype=float)
         boot_y = np.array(resampled_df['area'], dtype=float)
         fit_result, mini_result = fit_by_lmfit_yang(boot_x, boot_y)
-        new_intersection = float('Inf')
 
-        if fit_result.params['a'].value > 0:
-            new_intersection = (fit_result.params['b'].value - fit_result.params['c'].value) /\
-                               (0. - fit_result.params['a'].value)
+        a = fit_result.params['a'].value
+        b = fit_result.params['b'].value
+        c = fit_result.params['c'].value
 
-            # consider some special edge cases
-            if new_intersection > max(boot_x) or new_intersection < 0.:
-                new_intersection = float('Inf')
+        yresults = np.maximum(new_x * a + b, c)
 
-        yresults = []
-        for i in new_x:
-            if np.isnan(i):
-                pred_y = np.nan
-            elif i <= new_intersection:  # if the new_x is in the noise,
-                pred_y = fit_result.params['c'].value
-            elif i > new_intersection:
-                pred_y = (fit_result.params['a'].value*i) + fit_result.params['b'].value
-            yresults.append(pred_y)
         iter_results = pd.DataFrame(data={'boot_x': new_x, iter_num: yresults})
 
         return iter_results
@@ -472,11 +465,8 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     x = np.array(subset['curvepoint'], dtype=float)
     y = np.array(subset['area'], dtype=float)
 
-    # TODO REPLACE WITH .iloc
-    subset['curvepoint'] = subset['curvepoint'].astype(str)  # back to string
-
     # set up the model and the parameters (yang's lmfit minimize function approach)
-    result, mini = fit_by_lmfit_yang(x,y)
+    result, mini = fit_by_lmfit_yang(x, y)
     slope_noise = 0.0
     slope_linear = result.params['a'].value
     intercept_linear = result.params['b'].value
@@ -484,32 +474,35 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
 
     model_parameters = np.asarray([slope_noise, intercept_noise, slope_linear, intercept_linear])
 
-    lod_vals = calculate_lod(model_parameters, subset, std_mult)
+    lod_vals = calculate_lod(model_parameters, subset, std_mult, x)
     LOD, std_noise = lod_vals
+
     model_parameters = np.append(model_parameters, lod_vals)
 
-    # calculate coefficients of variation for discrete bins over the linear range (default bins=100)
-    x_i = np.linspace(LOD if np.isfinite(LOD) else min(x), max(x), num=100, dtype=float)
+    if not np.isfinite(LOD):
+        LOQ = np.inf
+        bootstrap_df = bootstrap_many(subset, [np.nan], num_bootreps=0)  # shortcut to get empty DF
+    else:
+        # calculate coefficients of variation for discrete bins over the linear range (default bins=100)
+        x_i = np.linspace(LOD, max(x), num=100, dtype=float)
 
-    bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps)
+        bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps)
 
     if verbose == 'y':
         bootstrap_df.to_csv(path_or_buf=os.path.join(output_dir,
                                                      'bootstrapsummary_' + peptide + '.csv'),
                             index=True)
 
-    LOQ = calculate_loq(model_parameters, bootstrap_df, cv_thresh)
     model_parameters = np.append(model_parameters, LOQ)
 
     if plot_or_not == 'y':
         # make a plot of the curve points and the fit, in both linear and log space
-        #build_plots(x, y, model_parameters, bootstrap_df, std_mult)
+        # build_plots(x, y, model_parameters, bootstrap_df, std_mult)
         try:
             build_plots(x, y, model_parameters, bootstrap_df, std_mult, cv_thresh)
             #continue
         except ValueError:
             sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
-
 
     # make a dataframe row with the peptide and its figures of merit
     new_row = [peptide, LOD, LOQ, slope_linear, intercept_linear, intercept_noise, std_noise]
@@ -517,9 +510,83 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
                                                   'slope_linear', 'intercept_linear', 'intercept_noise',
                                                   'stndev_noise'])
 
+    return new_df_row
 
-#   peptide_fom = peptide_fom.append(new_df_row)
-    peptide_fom = pd.concat([peptide_fom, new_df_row], ignore_index=True, axis=0)
 
-peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
-                   index=False)
+def main():
+    # usage statement and input descriptions
+    parser = argparse.ArgumentParser(
+        description='A  model for fitting calibration curve data. Takes calibration curve measurements as input, and \
+                    returns the Limit of Detection (LOD) and Limit of Quantitation (LOQ) for each peptide measured in \
+                    the calibration curve.',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    parser.add_argument('curve_data', type=str,
+                        help='a matrix containing peptides and their quantitative values across each curve point (currently\
+                                supporting Encyclopedia *.elib.peptides.txt quant reports and Skyline export reports)')
+    parser.add_argument('filename_concentration_map', type=str,
+                        help='a comma-delimited file containing maps between filenames and the concentration point \
+                                they represent (two columns named "filename" and "concentration")')
+    parser.add_argument('--std_mult', default=2, type=float,
+                        help='specify a multiplier of the standard deviation of the noise for determining limit of \
+                        detection (LOD)')
+    parser.add_argument('--cv_thresh', default=0.2, type=float,
+                        help='specify a coefficient of variation threshold for determining limit of quantitation (LOQ) \
+                                (Note: this should be a decimal, not a percentage, e.g. 20%CV threshold should be input as \
+                                0.2)')
+    parser.add_argument('--bootreps', default=100, type=int,
+                        help='specify a number of times to bootstrap the data (Note: this must be an integer, e.g. to \
+                                resample the data 100 times, the parameter value should be input as 100')
+    parser.add_argument('--multiplier_file', type=str,
+                        help='use a single-point multiplier associated with the curve data peptides')
+    parser.add_argument('--output_path', default=os.getcwd(), type=str,
+                        help='specify an output path for figures of merit and plots')
+    parser.add_argument('--plot', default='y', type=str,
+                        help='yes/no (y/n) to create individual calibration curve plots for each peptide')
+    parser.add_argument('--verbose', default='n', type=str,
+                        help='output a detailed summary of the bootstrapping step')
+
+    # parse arguments from command line
+    args = parser.parse_args()
+    raw_file = args.curve_data
+    col_conc_map_file = args.filename_concentration_map
+    cv_thresh = args.cv_thresh
+    std_mult = args.std_mult
+    bootreps = args.bootreps
+    multiplier_file = args.multiplier_file
+    output_dir = args.output_path
+    plot_or_not = args.plot
+    verbose = args.verbose
+
+    # read in the data
+    quant_df_melted = read_input(raw_file, col_conc_map_file)
+
+    # associate multiplier with the curvepoint ratio (if there is a multiplier provided)
+    if multiplier_file:
+        quant_df_melted = associate_multiplier(quant_df_melted, multiplier_file)
+
+    # initialize empty data frame to store figures of merit
+    peptide_fom = pd.DataFrame(columns=['peptide', 'LOD', 'LOQ',
+                                        'slope_linear', 'intercept_linear', 'intercept_noise',
+                                        'stndev_noise'])
+
+    # and awwaayyyyy we go~
+    with ProcessPoolExecutor() as exec:
+        # First, submit each peptide as a job to the executor
+        futures = []
+        for peptide, subset in quant_df_melted.groupby('peptide'):
+            if subset.empty:  # if the peptide is nan, skip it and move on to the next peptide
+                continue
+
+            futures.append(exec.submit(process_peptide, bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, subset, verbose))
+
+        # Just loop over the resulting futures and build up the results
+        for future in tqdm(as_completed(futures), total=len(futures)):
+            peptide_fom = pd.concat([peptide_fom, future.result()], ignore_index=True, axis=0)
+
+    peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
+                       index=False)
+
+
+if __name__ == "__main__":
+    main()
