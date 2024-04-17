@@ -1,5 +1,4 @@
-
-
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import pandas as pd
 import os
 import sys
@@ -34,10 +33,16 @@ def read_input(filename, col_conc_map_file):
         sys.stdout.write('Input identified as EncyclopeDIA *.elib.peptides.txt filetype.\n')
 
         df = pd.read_csv(filename, sep=None, engine='python')
-        df = df.drop(['numFragments', 'Protein'], axis=1)  # make a quantitative df with just curve points and peptides
-        col_conc_map = pd.read_csv(col_conc_map_file)
-        df = df.rename(columns=col_conc_map.set_index('filename')['concentration'])  # map filenames to concentrations
-        df = df.rename(columns={'Peptide': 'peptide'})
+        df.drop(['numFragments', 'Protein'], axis="columns", inplace=True)  # make a quantitative df with just curve points and peptides
+
+        col_conc_map = pd.read_csv(col_conc_map_file, index_col="filename")
+
+        # map filenames to concentrations
+        df.rename(columns=dict(
+            col_conc_map['concentration'],
+            **{'Peptide': 'peptide'}
+        ), inplace=True)
+
         df_melted = pd.melt(df, id_vars=['peptide'])
         df_melted.columns = ['peptide', 'curvepoint', 'area']
         df_melted = df_melted[df_melted['curvepoint'].isin(col_conc_map['concentration'])]
@@ -98,7 +103,7 @@ def read_input(filename, col_conc_map_file):
 
     # replace NaN values with zero
     # TODO: is this appropriate? it's required for lmfit in any case
-    df_melted['area'] = df_melted['area'].fillna(0)
+    df_melted['area'].fillna(0, inplace=True)
 
     return df_melted
 
@@ -258,25 +263,13 @@ def bootstrap_many(df, new_x, num_bootreps=100):
         boot_x = np.array(resampled_df['curvepoint'], dtype=float)
         boot_y = np.array(resampled_df['area'], dtype=float)
         fit_result, mini_result = fit_by_lmfit_yang(boot_x, boot_y)
-        new_intersection = float('Inf')
 
-        if fit_result.params['a'].value > 0:
-            new_intersection = (fit_result.params['b'].value - fit_result.params['c'].value) /\
-                               (0. - fit_result.params['a'].value)
+        a = fit_result.params['a'].value
+        b = fit_result.params['b'].value
+        c = fit_result.params['c'].value
 
-            # consider some special edge cases
-            if new_intersection > max(boot_x) or new_intersection < 0.:
-                new_intersection = float('Inf')
+        yresults = np.maximum(new_x * a + b, c)
 
-        yresults = []
-        for i in new_x:
-            if np.isnan(i):
-                pred_y = np.nan
-            elif i <= new_intersection:  # if the new_x is in the noise,
-                pred_y = fit_result.params['c'].value
-            elif i > new_intersection:
-                pred_y = (fit_result.params['a'].value*i) + fit_result.params['b'].value
-            yresults.append(pred_y)
         iter_results = pd.DataFrame(data={'boot_x': new_x, iter_num: yresults})
 
         return iter_results
@@ -309,7 +302,7 @@ def bootstrap_many(df, new_x, num_bootreps=100):
 
 
 # plot results
-def build_plots(x, y, model_results, boot_results, std_mult):
+def build_plots(x, y, model_results, boot_results, std_mult, cv_thresh):
 
     SMALL_SIZE = 18
     MEDIUM_SIZE = 20
@@ -385,7 +378,7 @@ def build_plots(x, y, model_results, boot_results, std_mult):
                 label=('LOQ = %.3e' % LOQ))
 
     # add 20%CV reference line
-    plt.axhline(y=0.20, color='r', linestyle='dashed')
+    plt.axhline(y=cv_thresh, color='r', linestyle='dashed')
 
     #plt.title(peptide, y=1.08)
     plt.xlabel('quantity')
@@ -427,7 +420,7 @@ parser.add_argument('--std_mult', default=2, type=float,
                     detection (LOD)')
 parser.add_argument('--cv_thresh', default=0.2, type=float,
                     help='specify a coefficient of variation threshold for determining limit of quantitation (LOQ) \
-                            (Note: this should be a decimal, not a percentage, e.g. 20%CV threshold should be input as \
+                            (Note: this should be a decimal, not a percentage, e.g. 20%% CV threshold should be input as \
                             0.2)')
 parser.add_argument('--bootreps', default=100, type=int,
                     help='specify a number of times to bootstrap the data (Note: this must be an integer, e.g. to \
@@ -486,11 +479,8 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     x = np.array(subset['curvepoint'], dtype=float)
     y = np.array(subset['area'], dtype=float)
 
-    # TODO REPLACE WITH .iloc
-    subset['curvepoint'] = subset['curvepoint'].astype(str)  # back to string
-
     # set up the model and the parameters (yang's lmfit minimize function approach)
-    result, mini = fit_by_lmfit_yang(x,y)
+    result, mini = fit_by_lmfit_yang(x, y)
     slope_noise = 0.0
     slope_linear = result.params['a'].value
     intercept_linear = result.params['b'].value
@@ -500,37 +490,39 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
 
     lod_vals = calculate_lod(model_parameters, subset, std_mult, min_noise_points, min_linear_points)
     LOD, std_noise = lod_vals
+
     model_parameters = np.append(model_parameters, lod_vals)
 
-    # calculate coefficients of variation for discrete bins over the linear range (default bins=100)
-    x_i = np.linspace(LOD if np.isfinite(LOD) else min(x), max(x), num=100, dtype=float)
+    if not np.isfinite(LOD):
+        LOQ = np.inf
+        bootstrap_df = bootstrap_many(subset, [np.nan], num_bootreps=0)  # shortcut to get empty DF
+    else:
+        # calculate coefficients of variation for discrete bins over the linear range (default bins=100)
+        x_i = np.linspace(LOD, max(x), num=100, dtype=float)
 
-    bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps)
+        bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps)
 
     if verbose == 'y':
-        boot_summary.to_csv(path_or_buf=os.path.join(output_dir,
-                                                     'bootstrapsummary_' + str(list(set(df['peptide']))[0]) + '.csv'),
+        bootstrap_df.to_csv(path_or_buf=os.path.join(output_dir,
+                                                     'bootstrapsummary_' + peptide + '.csv'),
                             index=True)
 
-    LOQ = calculate_loq(model_parameters, bootstrap_df, cv_thresh)
     model_parameters = np.append(model_parameters, LOQ)
 
     if plot_or_not == 'y':
         # make a plot of the curve points and the fit, in both linear and log space
-        #build_plots(x, y, model_parameters, bootstrap_df, std_mult)
+        # build_plots(x, y, model_parameters, bootstrap_df, std_mult)
         try:
-            build_plots(x, y, model_parameters, bootstrap_df, std_mult)
+            build_plots(x, y, model_parameters, bootstrap_df, std_mult, cv_thresh)
             #continue
         except ValueError:
             sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
-
 
     # make a dataframe row with the peptide and its figures of merit
     new_row = [peptide, LOD, LOQ, slope_linear, intercept_linear, intercept_noise, std_noise]
     new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ',
                                                   'slope_linear', 'intercept_linear', 'intercept_noise',
                                                   'stndev_noise'])
-
 
 #   peptide_fom = peptide_fom.append(new_df_row)
     peptide_fom = pd.concat([peptide_fom, new_df_row], ignore_index=True, axis=0)
