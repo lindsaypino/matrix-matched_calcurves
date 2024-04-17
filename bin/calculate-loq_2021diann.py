@@ -479,7 +479,7 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
         #build_plots(x, y, model_parameters, bootstrap_df, std_mult)
         try:
             build_plots(x, y, model_parameters, bootstrap_df, std_mult)
-            continue
+            #continue
         except ValueError:
             sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
 
@@ -489,7 +489,9 @@ for peptide in tqdm(quant_df_melted['peptide'].unique()):
     new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ',
                                                   'slope_linear', 'intercept_linear', 'intercept_noise',
                                                   'stndev_noise'])
-    peptide_fom = peptide_fom.append(new_df_row)
+
+#   peptide_fom = peptide_fom.append(new_df_row)
+    peptide_fom = pd.concat([peptide_fom, new_df_row], ignore_index=True, axis=0)
 
 peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
-                   index=False)
+                    index=False)
