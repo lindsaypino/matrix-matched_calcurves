@@ -78,18 +78,25 @@ def read_input(filename, col_conc_map_file):
         sys.stdout.write('Input identified as DIA-NN *.pr_matrix.tsv filetype.\n')
 
         df = pd.read_table(filename, sep=None, engine='python')
+
+        # create unique precursor entries so precursors aren't double-counted for curve fitting
+        df['Precursor.Charge'] = df['Precursor.Charge'].astype(str)
+        df['Modified.Sequence'] = df['Modified.Sequence'].astype(str)
+        df['peptide'] = df['Modified.Sequence'] + "_" + df['Precursor.Charge']
+
         df = df.drop(['Protein.Group',
+            'Modified.Sequence',
             'Protein.Ids',
             'Protein.Names',
             'Genes',
             'First.Protein.Description',
             'Proteotypic',
             'Stripped.Sequence',
-            'Precursor.Charge',
+            'Precursor.Charge', 
             'Precursor.Id'], 1)  # make a quantitative df with just curve points and peptides
         col_conc_map = pd.read_csv(col_conc_map_file)
         df = df.rename(columns=col_conc_map.set_index('filename')['concentration'])  # map filenames to concentrations
-        df = df.rename(columns={'Modified.Sequence': 'peptide'})
+
         df_melted = pd.melt(df, id_vars=['peptide'])
         df_melted.columns = ['peptide', 'curvepoint', 'area']
         df_melted = df_melted[df_melted['curvepoint'].isin(col_conc_map['concentration'])]
@@ -120,7 +127,7 @@ def associate_multiplier(df, multiplier_file):
 
     return multiplied_df
 
-
+# makes an educated guess for better "fit_by_lmfit_yang" starting parameters
 def linregress(data):
     x = data["curvepoint"]
     y = data["area"]
@@ -158,6 +165,7 @@ def fit_by_lmfit_yang(x, y):
         reg_data = subsetdf[~noise_mask]
         linear_slope, linear_intercept = linregress(reg_data)
 
+        # if the noise intercept is lower than the linear intercept, increase it to the linear 
         if noise_intercept <= linear_intercept:
             noise_intercept = linear_intercept * 1.05
 
@@ -194,7 +202,7 @@ def calculate_lod(model_params, df, std_mult, min_noise_points, min_linear_point
 
     min_curvepoint = df["curvepoint"].astype(float).min()
     if intersection <= min_curvepoint and min_noise_points < 1:
-        LOD = min_curvepoint
+        LOD = min_curvepoint ## TODO replace this with whatever the analchem definition of LOD
         std_noise = np.nan
     elif m_linear <= 0:  # catch edge cases where there is only noise in the curve
         LOD = float('Inf')
