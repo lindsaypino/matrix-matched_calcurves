@@ -10,6 +10,9 @@ import random
 from lmfit import Minimizer, Parameters
 from lmfit.models import LinearModel
 
+DEFAULT_MIN_LINEAR_POINTS = 1
+DEFAULT_MIN_NOISE_POINTS = 2
+
 plt.style.use('seaborn-v0_8-whitegrid')
 
 np.random.seed(8888)
@@ -177,7 +180,7 @@ def fit_by_lmfit_yang(x, y):
 
 
 # find the intersection of the noise and linear regime
-def calculate_lod(model_params, df, std_mult, x):
+def calculate_lod(model_params, df, std_mult, min_noise_points, min_linear_points, x):
 
     m_noise, b_noise, m_linear, b_linear = model_params
 
@@ -186,22 +189,27 @@ def calculate_lod(model_params, df, std_mult, x):
         intersection = np.inf
     else:
         intersection = (b_linear-b_noise) / (m_noise-m_linear)
+
     std_noise = np.std(df['area'].loc[(df['curvepoint'].astype(float) < intersection)])
 
-    if m_linear <= 0:  # catch edge cases where there is only noise in the curve
+    min_curvepoint = df["curvepoint"].astype(float).min()
+    if intersection <= min_curvepoint and min_noise_points < 1:
+        LOD = min_curvepoint
+        std_noise = np.nan
+    elif m_linear <= 0:  # catch edge cases where there is only noise in the curve
         LOD = float('Inf')
     else:
         LOD = (b_noise + (std_mult*std_noise) - b_linear) / m_linear
     lod_results = [LOD, std_noise]
 
     # LOD edge cases
-    curve_points = set(list(df['curvepoint']))
-    curve_points.remove(min(curve_points))
-    curve_points.remove(max(curve_points))  # now max is 2nd highest point
-    if LOD > max(x):  # if the intersection is higher than the top point of the curve or is a negative number,
-        lod_results = [float('Inf'), float('Inf')]
-    elif LOD < float(min(curve_points)):  # if there's not at least two points below the LOD
-        lod_results = [float('Inf'), float('Inf')]
+    mask = df["curvepoint"].astype(float) >= LOD
+    if df["curvepoint"][mask].nunique() < min_linear_points:
+        # if the intersection is higher than the top point of the curve
+        lod_results = [np.inf, np.inf]
+    elif df["curvepoint"][~mask].nunique() < min_noise_points:
+        # if there's not enough below the LOD
+        lod_results = [np.inf, np.inf]
 
     return lod_results
 
@@ -477,6 +485,10 @@ def main():
     parser.add_argument('--bootreps', default=100, type=int,
                         help='specify a number of times to bootstrap the data (Note: this must be an integer, e.g. to \
                                 resample the data 100 times, the parameter value should be input as 100')
+    parser.add_argument('--min_noise_points', default=DEFAULT_MIN_NOISE_POINTS, type=int,
+                        help="specify the minimum required curve points required below the LOD")
+    parser.add_argument('--min_linear_points', default=DEFAULT_MIN_LINEAR_POINTS, type=int,
+                        help="specify the minimum required curve points required above the LOD")
     parser.add_argument('--multiplier_file', type=str,
                         help='use a single-point multiplier associated with the curve data peptides')
     parser.add_argument('--output_path', default=os.getcwd(), type=str,
@@ -493,6 +505,8 @@ def main():
     cv_thresh = args.cv_thresh
     std_mult = args.std_mult
     bootreps = args.bootreps
+    min_noise_points = args.min_noise_points
+    min_linear_points = args.min_linear_points
     multiplier_file = args.multiplier_file
     output_dir = args.output_path
     plot_or_not = args.plot
