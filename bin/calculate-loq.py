@@ -423,7 +423,7 @@ def build_plots(peptide, x, y, model_results, boot_results, num_bootreps, std_mu
     plt.close()
 
 
-def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, subset, verbose):
+def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, subset, verbose):
     # sort the dataframe with x values in strictly ascending order
     subset = subset.sort_values(by='curvepoint', ascending=True)
 
@@ -440,7 +440,7 @@ def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_m
 
     model_parameters = np.asarray([slope_noise, intercept_noise, slope_linear, intercept_linear])
 
-    lod_vals = calculate_lod(model_parameters, subset, std_mult, x)
+    lod_vals = calculate_lod(model_parameters, subset, std_mult, min_noise_points, min_linear_points, x)
     LOD, std_noise = lod_vals
 
     model_parameters = np.append(model_parameters, lod_vals)
@@ -456,7 +456,7 @@ def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_m
 
         if verbose == 'y':
             # TODO: this line appears to be very buggy
-            boostrap_df.to_csv(path_or_buf=os.path.join(output_dir,
+            bootstrap_df.to_csv(path_or_buf=os.path.join(output_dir,
                                                         'bootstrapsummary_' + peptide + '.csv'),
                                index=True)
 
@@ -553,7 +553,7 @@ def main():
             if subset.empty:  # if the peptide is nan, skip it and move on to the next peptide
                 continue
 
-            futures.append(exec.submit(process_peptide, bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, subset, verbose))
+            futures.append(exec.submit(process_peptide, bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, subset, verbose))
 
         # Just loop over the resulting futures and build up the results
         for future in tqdm(as_completed(futures), total=len(futures)):
