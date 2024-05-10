@@ -294,7 +294,7 @@ def bootstrap_many(df, new_x, num_bootreps=100):
 
 
 # plot results
-def build_plots(peptide, x, y, model_results, boot_results, std_mult, output_dir):
+def build_plots(peptide, x, y, model_results, boot_results, std_mult, cv_thresh, output_dir):
 
     SMALL_SIZE = 18
     MEDIUM_SIZE = 20
@@ -370,7 +370,7 @@ def build_plots(peptide, x, y, model_results, boot_results, std_mult, output_dir
                 label=('LOQ = %.3e' % LOQ))
 
     # add 20%CV reference line
-    plt.axhline(y=0.20, color='r', linestyle='dashed')
+    plt.axhline(y=cv_thresh, color='r', linestyle='dashed')
 
     #plt.title(peptide, y=1.08)
     plt.xlabel('quantity')
@@ -427,9 +427,9 @@ def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_m
 
         if verbose == 'y':
             # TODO: this line appears to be very buggy
-            boot_summary.to_csv(path_or_buf=os.path.join(output_dir,
-                                                         'bootstrapsummary_' + str(list(set(df['peptide']))[0]) + '.csv'),
-                                index=True)
+            boostrap_df.to_csv(path_or_buf=os.path.join(output_dir,
+                                                        'bootstrapsummary_' + peptide + '.csv'),
+                               index=True)
 
         LOQ = calculate_loq(model_parameters, bootstrap_df, cv_thresh)
 
@@ -439,7 +439,7 @@ def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_m
         # make a plot of the curve points and the fit, in both linear and log space
         # build_plots(x, y, model_parameters, bootstrap_df, std_mult)
         try:
-            build_plots(peptide, x, y, model_parameters, bootstrap_df, std_mult, output_dir)
+            build_plots(peptide, x, y, model_parameters, bootstrap_df, std_mult, cv_thresh, output_dir)
             # continue
         except ValueError:
             sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
@@ -472,7 +472,7 @@ def main():
                         detection (LOD)')
     parser.add_argument('--cv_thresh', default=0.2, type=float,
                         help='specify a coefficient of variation threshold for determining limit of quantitation (LOQ) \
-                                (Note: this should be a decimal, not a percentage, e.g. 20%CV threshold should be input as \
+                                (Note: this should be a decimal, not a percentage, e.g. 20%% CV threshold should be input as \
                                 0.2)')
     parser.add_argument('--bootreps', default=100, type=int,
                         help='specify a number of times to bootstrap the data (Note: this must be an integer, e.g. to \
