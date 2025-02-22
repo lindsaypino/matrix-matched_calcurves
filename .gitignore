@@ -1,1 +1,3 @@
+# Ignore desktop.ini files
 desktop.ini
+**/desktop.ini
