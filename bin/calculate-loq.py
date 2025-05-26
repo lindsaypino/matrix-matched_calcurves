@@ -142,14 +142,15 @@ def linregress(data):
 
 
 # yang's solve for the piecewise fit using lmfit Minimize function
-def fit_by_lmfit_yang(x, y):
+def fit_by_lmfit_yang(x, y, model):
 
+    # residual function
     def fcn2min(params, x, data, weight):
         a = params['a'].value
         b = params['b'].value
         c = params['c'].value
-        model = np.maximum(c, a*x+b)
-        return (model-data) * weight
+        model_vals = np.maximum(c, a * x + b)
+        return (model_vals - data) * weight
 
     # parameter initialization
     def initialize_params(x, y, weights):
@@ -170,27 +171,95 @@ def fit_by_lmfit_yang(x, y):
             noise_intercept = linear_intercept * 1.05
 
         return linear_slope, linear_intercept, noise_intercept
+    
+    def initialize_params_legacy(x, y):
+        # 2019 Pino model uses slope from two highest points, intercept at lowest
+        subsetdf = pd.DataFrame({'curvepoint': pd.to_numeric(x), 'area': y})
+        mean_y = subsetdf.groupby('curvepoint')['area'].mean()  # find the mean response area for each curve point
 
-    weights = np.minimum(1 / (np.asarray(np.sqrt(x), dtype=float)+np.finfo(float).eps), 1000)  # inverse weights
+        # find the top point, second-top point, and bottom points of the curve data
+        conc_list = list(set(x))
+        top_point = max(conc_list)
+        conc_list.remove(top_point)
+        second_top = max(conc_list)
+        bottom_point = min(conc_list)
 
+        # using the means, calculate a slope (y1-y2/x1-x2)
+        linear_slope = (mean_y[second_top]-mean_y[top_point]) / (second_top-top_point)
+        # find the noise intercept using average of bottom three points
+        noise_intercept = mean_y[bottom_point]
+        # find the linear intercept using linear slope (b = y-mx) and the top point
+        linear_intercept = mean_y[top_point] - (linear_slope*top_point)
+
+        # edge case catch?
+        if noise_intercept < linear_intercept:
+            noise_intercept = linear_intercept * 1.05
+
+        return linear_slope, linear_intercept, noise_intercept
+
+    # always compute weights
+    weights = np.minimum(1.0 / (np.sqrt(x) + np.finfo(float).eps), 1000)
+
+    # initialize Parameters object
     params = Parameters()
-    initial_a, initial_b, initial_c = initialize_params(x,y,weights)
-    initial_cminusb = initial_c - initial_b
-    params.add('a', value=initial_a, min=0.0, vary=True)  # slope signal
-    params.add('b', value=initial_b, vary=True)  # intercept signal
-    params.add('c_minus_b', value=initial_cminusb, min=0.0, vary=True)
-    params.add('c', expr='b + c_minus_b')
 
+    # build Parameters() differently per user-specified model
+    if model == 'piecewise':
+        # if the model is piecewise, use the legacy method
+        initial_a, initial_b, initial_c = initialize_params_legacy(x,y)
+        initial_cminusb = initial_c - initial_b
+        params.add('a', value=initial_a, min=0.0, vary=True)  # slope signal
+        params.add('b', value=initial_b, vary=True)  # intercept signal
+        params.add('c_minus_b', value=initial_cminusb, min=0.0, vary=True)
+        params.add('c', expr='b + c_minus_b')
+
+    elif model == "auto":
+        # otherwise, use seth's improved initialization method
+        initial_a, initial_b, initial_c = initialize_params(x, y, weights)
+        params.add('a',         value=initial_a,     min=0.0, vary=True)
+        params.add('b',         value=initial_b,             vary=True)
+        params.add('c_minus_b', value=(initial_c - initial_b), min=0.0, vary=True)
+        params.add('c',         expr='b + c_minus_b')
+
+    # run lmfit
     minner = Minimizer(fcn2min, params, fcn_args=(x, y, weights))
     result = minner.minimize()
-
     return result, minner
 
 
 # find the intersection of the noise and linear regime
-def calculate_lod(model_params, df, std_mult, min_noise_points, min_linear_points, x):
+def calculate_lod(model_params, df, std_mult, min_noise_points, min_linear_points, x, model='auto'):
 
+    """
+    Compute LOD (limit of detection) from model_params and bootstraps.
+    model='new'      => apply your improved min_point logic
+    model='original' => simple intersection+std as in 2021 script
+    Returns (LOD, std_noise).
+    """
     m_noise, b_noise, m_linear, b_linear = model_params
+    
+    if model == 'piecewise':
+
+        # calculate the standard deviation for the noise segment
+        intersection = (b_linear-b_noise) / (m_noise-m_linear)
+        std_noise = np.std(df['area'].loc[(df['curvepoint'].astype(float) < intersection)])
+
+        if m_linear < 0:  # catch edge cases where there is only noise in the curve
+            LOD = float('Inf')
+        else:
+            LOD = (b_noise + (std_mult*std_noise) - b_linear) / m_linear
+        lod_results = [LOD, std_noise]
+
+        # LOD edge cases
+        curve_points = set(list(df['curvepoint']))
+        curve_points.remove(min(curve_points))
+        curve_points.remove(max(curve_points))  # now max is 2nd highest point
+        if LOD > max(x):  # if the intersection is higher than the top point of the curve or is a negative number,
+            lod_results = [float('Inf'), float('Inf')]
+        elif LOD < float(min(curve_points)):  # if there's not at least two points below the LOD
+            lod_results = [float('Inf'), float('Inf')]
+
+        return LOD, std_noise
 
     # calculate the standard deviation for the noise segment
     if (m_noise - m_linear) == 0:
@@ -257,9 +326,9 @@ def calculate_loq(model_params, boot_results, cv_thresh=0.2):
 
 
 # determine prediction interval by bootstrapping
-def bootstrap_many(df, new_x, num_bootreps=100):
+def bootstrap_many(df, new_x, num_bootreps=100, model="auto"):
 
-    def bootstrap_once(df, new_x, iter_num):
+    def bootstrap_once(df, new_x, iter_num, model="auto"):
 
 #        resampled_df = df.sample(n=len(df), replace=True)
 
@@ -270,7 +339,7 @@ def bootstrap_many(df, new_x, num_bootreps=100):
 
         boot_x = np.array(resampled_df['curvepoint'], dtype=float)
         boot_y = np.array(resampled_df['area'], dtype=float)
-        fit_result, mini_result = fit_by_lmfit_yang(boot_x, boot_y)
+        fit_result, mini_result = fit_by_lmfit_yang(boot_x, boot_y, model)
 
         a = fit_result.params['a'].value
         b = fit_result.params['b'].value
@@ -290,7 +359,7 @@ def bootstrap_many(df, new_x, num_bootreps=100):
         # Bootstrap the data (e.g. resample the data with replacement), eval prediction (new_y) at each new_x
         boot_results = pd.DataFrame(data={'boot_x': new_x})
         for i in range(num_bootreps):
-            iteration_results = bootstrap_once(df, new_x, i)
+            iteration_results = bootstrap_once(df, new_x, i, model)
 
             boot_results = pd.merge(boot_results, iteration_results, on='boot_x')
 
@@ -431,7 +500,7 @@ def build_plots(peptide, x, y, model_results, boot_results, num_bootreps, std_mu
     plt.close()
 
 
-def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, subset, verbose):
+def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, subset, verbose, model_choice):
     # sort the dataframe with x values in strictly ascending order
     subset = subset.sort_values(by='curvepoint', ascending=True)
 
@@ -439,16 +508,16 @@ def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_m
     x = np.array(subset['curvepoint'], dtype=float)
     y = np.array(subset['area'], dtype=float)
 
-    # set up the model and the parameters (yang's lmfit minimize function approach)
-    result, mini = fit_by_lmfit_yang(x, y)
-    slope_noise = 0.0
+    # set up the model and the parameters
+    result, minner = fit_by_lmfit_yang(x, y, model_choice)
+    slope_noise = 0.0  # noise segment is flat
     slope_linear = result.params['a'].value
     intercept_linear = result.params['b'].value
     intercept_noise = result.params['c'].value
 
     model_parameters = np.asarray([slope_noise, intercept_noise, slope_linear, intercept_linear])
 
-    lod_vals = calculate_lod(model_parameters, subset, std_mult, min_noise_points, min_linear_points, x)
+    lod_vals = calculate_lod(model_parameters, subset, std_mult, min_noise_points, min_linear_points, x, model_choice)
     LOD, std_noise = lod_vals
 
     model_parameters = np.append(model_parameters, lod_vals)
@@ -460,7 +529,7 @@ def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_m
         # calculate coefficients of variation for discrete bins over the linear range (default bins=100)
         x_i = np.linspace(LOD, max(x), num=100, dtype=float)
 
-        bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps)
+        bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps, model=model_choice)
 
         if verbose == 'y':
             bootstrap_df.to_csv(path_or_buf=os.path.join(output_dir,
@@ -525,6 +594,11 @@ def main():
                         help='yes/no (y/n) to create individual calibration curve plots for each peptide')
     parser.add_argument('--verbose', default='n', type=str,
                         help='output a detailed summary of the bootstrapping step')
+    parser.add_argument('--model', default='auto', choices=['auto', 'piecewise'], 
+                        help='Specify which model to use for LOQ fitting, auto (per peptide) or the original piecewise fit. \
+                                Default is auto (best AIC).')
+
+
 
     # parse arguments from command line
     args = parser.parse_args()
@@ -539,6 +613,7 @@ def main():
     output_dir = args.output_path
     plot_or_not = args.plot
     verbose = args.verbose
+    model_type = args.model
 
     # read in the data
     quant_df_melted = read_input(raw_file, col_conc_map_file)
@@ -560,7 +635,7 @@ def main():
             if subset.empty:  # if the peptide is nan, skip it and move on to the next peptide
                 continue
 
-            futures.append(exec.submit(process_peptide, bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, subset, verbose))
+            futures.append(exec.submit(process_peptide, bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, subset, verbose, model_type))
 
         # Just loop over the resulting futures and build up the results
         for future in tqdm(as_completed(futures), total=len(futures)):
