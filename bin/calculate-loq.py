@@ -23,14 +23,15 @@ random.seed(8888)
 #warnings.simplefilter("error")
 #warnings.simplefilter("ignore", FutureWarning)
 
-# detect whether the file is Encyclopedia output or Skyline report, then read it in appropriately
+# Assume input file source, read in the data, and return a standard-format melted dataframe
+# output of this function is a melted dataframe with columns: peptide, curvepoint, area
 def read_input(filename, col_conc_map_file):
     with open(filename, 'r') as f:
         header_line = f.readline()
 
     # if numFragments is a column, it's an Encyclopedia file
     if 'numFragments' in header_line:
-        sys.stdout.write('Input identified as EncyclopeDIA *.elib.peptides.txt filetype.\n')
+        sys.stdout.write('Input assumed to be EncyclopeDIA *.elib.peptides.txt filetype.\n')
 
         df = pd.read_csv(filename, sep=None, engine='python')
         df.drop(['numFragments', 'Protein'], axis="columns", inplace=True)  # make a quantitative df with just curve points and peptides
@@ -47,10 +48,10 @@ def read_input(filename, col_conc_map_file):
         df_melted.columns = ['peptide', 'curvepoint', 'area']
         df_melted = df_melted[df_melted['curvepoint'].isin(col_conc_map['concentration'])]
 
-    # require columns for File Name, Total Area Fragment, Peptide Sequence
+    # if Skyline file, require columns for File Name, Total Area Fragment, Peptide Sequence
     # TODO: option for Total Area Ratio?
     elif all(col in header_line for col in ['Total Area Fragment', 'Peptide Sequence', 'File Name']):
-        sys.stdout.write('Input identified as Skyline export filetype. \n')
+        sys.stdout.write('Input assumed to be Skyline export filetype. \n')
 
         df_melted = pd.read_csv(filename)
         df_melted.rename(columns={'File Name': 'filename'}, inplace=True)
@@ -73,9 +74,11 @@ def read_input(filename, col_conc_map_file):
 
         df_melted['area'].fillna(0, inplace=True)  # replace NA with 0
 
-    # dia-nn output
-    elif 'Stripped.Sequence' in header_line:
-        sys.stdout.write('Input identified as DIA-NN *.pr_matrix.tsv filetype.\n')
+    # If dia-nn *.pr_matrix.tsv input file, supply warning about normalizations 
+    # and suggest using diann_report.tsv instead
+    elif 'Stripped.Sequence' in header_line and 'Precursor.Quantity' not in header_line:
+        sys.stdout.write('Input assumed to be DIA-NN *.pr_matrix.tsv filetype.\n')
+        sys.stdout.write('WARNING! Use DIA-NN diann_report.tsv instead of pr_matrix!\n')
 
         df = pd.read_table(filename, sep=None, engine='python')
 
@@ -104,6 +107,37 @@ def read_input(filename, col_conc_map_file):
         # remove colons in Unimod description, e.g. "AAVDC(UniMod:4)EC(UniMod:4)EFQNLEHNEK.png"
         df_melted['peptide'] = df_melted['peptide'].str.replace(':', '')
         #print(df_melted.head())
+
+    # If dia-nn diann_report.tsv input file, check for BOTH Stripped.Sequence AND Precursor.Quantity
+    # TODO: add filereading for newer DIA-NN version's diann_report parquet filetype??
+    elif 'Stripped.Sequence' in header_line and 'Precursor.Quantity' in header_line:
+        sys.stdout.write('Input assumed to be DIA-NN diann_report.tsv filetype.\n')
+
+        df = pd.read_table(filename, sep=None, engine='python')
+
+        # Drop all other columns in the report
+        columns_to_keep = ['Precursor.Id', 'File.Name', 'Precursor.Quantity']
+        df = df[columns_to_keep]
+
+        # Clean up the column names to match downstream convention
+        df.rename(columns={'File.Name': 'filename',
+                    'Precursor.Id': 'peptide',
+                    'Precursor.Quantity': 'area'}, inplace=True)
+
+        # Map filenames to concentrations - using merge instead of rename
+        col_conc_map = pd.read_csv(col_conc_map_file)
+        df = pd.merge(df, col_conc_map[['filename', 'concentration']], on='filename', how='inner')
+
+        # Create melted dataframe preserving all values
+        df_melted = pd.DataFrame({
+            'peptide': df['peptide'],
+            'curvepoint': df['concentration'],
+            'area': df['area']
+        })
+
+        # remove colons in Unimod description, e.g. "AAVDC(UniMod:4)EC(UniMod:4)EFQNLEHNEK.png"
+        df_melted['peptide'] = df_melted['peptide'].str.replace(':', '')
+        print(df_melted.head())
 
     # convert the curve points to numbers so that they sort correctly
     df_melted['curvepoint'] = pd.to_numeric(df_melted['curvepoint'])
