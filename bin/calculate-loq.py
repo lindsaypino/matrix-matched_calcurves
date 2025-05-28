@@ -22,6 +22,7 @@ random.seed(8888)
 #import warnings
 #warnings.simplefilter("error")
 #warnings.simplefilter("ignore", FutureWarning)
+#warnings.filterwarnings("ignore")
 
 # Assume input file source, read in the data, and return a standard-format melted dataframe
 # output of this function is a melted dataframe with columns: peptide, curvepoint, area
@@ -86,6 +87,7 @@ def read_input(filename, col_conc_map_file):
         df['Precursor.Charge'] = df['Precursor.Charge'].astype(str)
         df['Modified.Sequence'] = df['Modified.Sequence'].astype(str)
         df['peptide'] = df['Modified.Sequence'] + "_" + df['Precursor.Charge']
+        print(df.head())
 
         df = df.drop(['Protein.Group',
             'Modified.Sequence',
@@ -96,7 +98,7 @@ def read_input(filename, col_conc_map_file):
             'Proteotypic',
             'Stripped.Sequence',
             'Precursor.Charge',
-            'Precursor.Id'], 1)  # make a quantitative df with just curve points and peptides
+            'Precursor.Id'], axis=1)  # make a quantitative df with just curve points and peptides
         col_conc_map = pd.read_csv(col_conc_map_file)
         df = df.rename(columns=col_conc_map.set_index('filename')['concentration'])  # map filenames to concentrations
 
@@ -137,7 +139,7 @@ def read_input(filename, col_conc_map_file):
 
         # remove colons in Unimod description, e.g. "AAVDC(UniMod:4)EC(UniMod:4)EFQNLEHNEK.png"
         df_melted['peptide'] = df_melted['peptide'].str.replace(':', '')
-        print(df_melted.head())
+        #print(df_melted.head())
 
     # convert the curve points to numbers so that they sort correctly
     df_melted['curvepoint'] = pd.to_numeric(df_melted['curvepoint'])
@@ -671,12 +673,29 @@ def main():
 
             futures.append(exec.submit(process_peptide, bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, subset, verbose, model_type))
 
-        # Just loop over the resulting futures and build up the results
-        for future in tqdm(as_completed(futures), total=len(futures)):
-            peptide_fom = pd.concat([peptide_fom, future.result()], ignore_index=True, axis=0)
+        # Create output file with headers
+        output_file = os.path.join(output_dir, 'figuresofmerit.csv')
+        headers = ['peptide', 'LOD', 'LOQ', 'slope_linear', 'intercept_linear', 'intercept_noise', 'stndev_noise']
+        with open(output_file, 'w') as f:
+            f.write(','.join(headers) + '\n')
+            f.flush()
+            os.fsync(f.fileno())
 
-    peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
-                       index=False)
+        # Process results as they complete so that if it randomly errors out, you at least have some output results
+        for future in tqdm(as_completed(futures), total=len(futures)):
+            try:
+                result_df = future.result()
+                # Use a file lock to prevent concurrent writes from the threads
+                with open(output_file, 'a') as f:
+                    result_df.to_csv(f, header=False, index=False)
+                    f.flush()
+                    os.fsync(f.fileno())
+                peptide_fom = pd.concat([peptide_fom, result_df], ignore_index=True, axis=0)
+            except Exception as e:
+                print(f"Error processing result: {str(e)}")
+
+    #peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
+    #                   index=False)
 
 
 if __name__ == "__main__":
