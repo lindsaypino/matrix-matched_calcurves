@@ -87,7 +87,7 @@ def read_input(filename, col_conc_map_file):
         df['Precursor.Charge'] = df['Precursor.Charge'].astype(str)
         df['Modified.Sequence'] = df['Modified.Sequence'].astype(str)
         df['peptide'] = df['Modified.Sequence'] + "_" + df['Precursor.Charge']
-        print(df.head())
+        #print(df.head())
 
         df = df.drop(['Protein.Group',
             'Modified.Sequence',
@@ -146,7 +146,8 @@ def read_input(filename, col_conc_map_file):
 
     # replace NaN values with zero
     # TODO: is this appropriate? it's required for lmfit in any case
-    df_melted['area'].fillna(0, inplace=True)
+    # df_melted['area'].fillna(0, inplace=True)  # FutureWarning: this will be deprecated in a future version of pandas
+    df_melted.fillna({'area': 0}, inplace=True)
 
     return df_melted
 
