@@ -141,6 +141,36 @@ def read_input(filename, col_conc_map_file):
         df_melted['peptide'] = df_melted['peptide'].str.replace(':', '')
         #print(df_melted.head())
 
+    # Spectronaut output
+    elif "PEP.StrippedSequence" in header_line:
+        sys.stdout.write('Input identified as Spectronaut output.\n')
+
+        df = pd.read_table(filename, sep=None, engine='python')
+        
+        # create unique precursor entries so precursors aren't double-counted for curve fitting
+        df['Precursor.Charge'] = df['EG.PrecursorId'].str.split(".", expand=True)[1]
+        df['Modified.Sequence'] = df['EG.PrecursorId'].str.split(".", expand=True)[0].str.strip("_")
+        df['peptide'] = df['Modified.Sequence'] + "_" + df['Precursor.Charge']
+        
+        df.drop(["PG.ProteinGroups",
+                 "PG.Organisms",
+                 "PG.ProteinNames",
+                 "PEP.StrippedSequence",
+                 "PEP.PeptidePosition",
+                 "EG.PrecursorId",
+                 "EG.ModifiedSequence"], axis="columns", inplace=True)  # make a quantitative df with just curve points and peptides
+        
+        col_conc_map = pd.read_csv(col_conc_map_file)
+
+        df = df.rename(columns=col_conc_map.set_index('filename')['concentration'])  # map filenames to concentrations
+
+        df_melted = pd.melt(df, id_vars=['peptide'])
+        df_melted.columns = ['Peptide', 'curvepoint', 'area']
+        df_melted = df_melted[df_melted['curvepoint'].isin(col_conc_map['concentration'])]
+
+        # remove colons in Unimod description, e.g. "AAVDC(UniMod:4)EC(UniMod:4)EFQNLEHNEK.png"
+        df_melted['Peptide'] = df_melted['Peptide'].str.replace(':', '')
+
     # convert the curve points to numbers so that they sort correctly
     df_melted['curvepoint'] = pd.to_numeric(df_melted['curvepoint'])
 
