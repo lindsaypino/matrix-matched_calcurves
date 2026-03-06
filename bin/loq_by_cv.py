@@ -17,7 +17,7 @@ def read_input(filename, col_conc_map_file):
         sys.stdout.write("Input identified as EncyclopeDIA *.elib.peptides.txt filetype.\n")
 
         df = pd.read_table(filename, sep=None, engine="python")  # read in the table
-        df = df.drop(['numFragments', 'Protein'], 1)  # make a quantitative df with just curve points and peptides
+        df = df.drop(['numFragments', 'Protein'], axis=1)  # make a quantitative df with just curve points and peptides
         col_conc_map = pd.read_csv(col_conc_map_file, sep=',', engine="python")
         df = df.rename(columns=col_conc_map.set_index('filename')['concentration'])  # map filenames to concentrations
         df = df.rename(columns={'Peptide': 'peptide'})  # rename the peptide column
@@ -47,7 +47,7 @@ def read_input(filename, col_conc_map_file):
             df_melted.rename(columns={'Peptide Sequence': 'peptide'}, inplace=True)
             df_melted.rename(columns={'concentration': 'curvepoint'}, inplace=True)
 
-            df_melted['area'].fillna(0, inplace=True)  # replace NA with 0
+            df_melted['area'] = df_melted['area'].fillna(0)  # replace NA with 0
 
     # convert the curve points to numbers so that they sort correctly
     df_melted['curvepoint'] = pd.to_numeric(df_melted['curvepoint'])
@@ -88,54 +88,27 @@ def calculate_oneCV(subset_df):
 def calculate_LOQ_byCV(df):
     sys.stderr.write("Calculating LOQ by %CV.\n")
 
-    # initialize empty data frames to store results
-    cv_colnames = ['peptide', 'curvepoint', '%CV']
-    peptideCVs = pd.DataFrame(columns=cv_colnames)
+    # compute CV for every (peptide, curvepoint) group using pandas C-level aggregations
+    # (ddof=1 matches calculate_oneCV; groupby std defaults to ddof=1)
+    grp = df.groupby(['peptide', 'curvepoint'], sort=False)['area']
+    _means = grp.mean()
+    _stds  = grp.std(ddof=1)
+    _cv    = (_stds / _means).where(_means != 0, other=np.nan)
+    peptideCVs = _cv.rename('%CV').reset_index()
 
-    loq_colnames = ['peptide', 'loq']
-    peptideLOQs = pd.DataFrame(columns=loq_colnames)
+    # find LOQ: lowest curvepoint (> 0) with CV <= 20% for each peptide
+    good_cv_rows = peptideCVs[(peptideCVs['%CV'] <= 0.2) & (peptideCVs['curvepoint'] > 0)]
+    peptideLOQs = (
+        good_cv_rows.sort_values('curvepoint')
+                    .groupby('peptide', sort=False)['curvepoint']
+                    .first()
+                    .reset_index()
+                    .rename(columns={'curvepoint': 'loq'})
+    )
 
-    # iterate through each peptide
-    for peptide in tqdm(df.peptide.unique()):
-
-        # subset the dataframe for this precursor
-        subset_df = df.loc[(df['peptide'] == peptide)]
-
-        # empty dataframe to store this peptides CVs
-        this_peptides_CVs = pd.DataFrame(columns=cv_colnames)
-
-        # calculate points' CV
-        for point in subset_df['curvepoint'].unique():
-
-            # subset the subset dataframe for each curve point
-            subsubset_df = subset_df.loc[(subset_df['curvepoint']) == point]
-
-            # calculate the CV for the curve point
-            cv = calculate_oneCV(subsubset_df)
-
-            # store the peptide, curve point, & %cv as dataframe
-            new_row = [peptide, point, cv]
-            new_df_row = pd.DataFrame([new_row], columns=cv_colnames)
-            peptideCVs = peptideCVs.append(new_df_row)
-            this_peptides_CVs = this_peptides_CVs.append(new_df_row)
-
-        # sort by curvepoint
-        this_peptides_CVs = this_peptides_CVs.sort_values(by='curvepoint', ascending=True)
-        curvepoints = this_peptides_CVs['curvepoint'].unique().tolist()
-        curvepoints = [x for x in curvepoints if x > 0]
-
-        # move down the curve points from lowest to highest, checking the
-        # cv at each to find the lowest point with <= 20% CV
-        loq = np.nan
-        for i in curvepoints:
-            if this_peptides_CVs.loc[this_peptides_CVs['curvepoint'] == i, '%CV'].iloc[0] <= 0.2:
-                loq = i  # loq is lowest point with <= 20% cv
-                break
-
-        # write the 20% cv loq to dataframe
-        new_loq_row = pd.DataFrame([[peptide, loq]], columns=loq_colnames)
-        peptideLOQs = peptideLOQs.append(new_loq_row)
-
+    # peptides with no good-CV point get NaN loq
+    all_peps = pd.DataFrame({'peptide': df['peptide'].unique()})
+    peptideLOQs = all_peps.merge(peptideLOQs, on='peptide', how='left')
 
     peptideLOQs.to_csv(os.path.join(output_dir, "./loqsbycv.csv"), index=False)
     peptideCVs.to_csv(os.path.join(output_dir, "./peptidecvs.csv"), index=False)
@@ -257,9 +230,10 @@ def make_plot(df):
     # force y axis ticks to be scientific notation so the plot is prettier (x is already semilog)
 
     plt.xlim(xmin=min(x)-max(x)*0.01)  # anchor x and y to 0-ish.
-    if len(cv) > 0:
+    cv_max = cv.max()
+    if len(cv) > 0 and np.isfinite(cv_max) and cv_max > 0:
         plt.ylim(ymin=-0.01,
-                 ymax=(max(cv)*1.05))
+                 ymax=(cv_max*1.05))
 
     # save the figure
     # add legend with LOD and LOQ values
@@ -291,8 +265,8 @@ if __name__ == "__main__":
                         help='use a single-point multiplier associated with the curve data peptides')
     parser.add_argument('--output_path', default=os.getcwd(), type=str,
                         help='specify an output path for figures of merit and plots (default=current directory)')
-    parser.add_argument('--plot', default=True, type=bool,
-                        help='create individual calibration curve plots for each peptide (default=True)')
+    parser.add_argument('--plot', default='y', type=str,
+                        help='create individual calibration curve plots for each peptide (y/n, default=y)')
 
     # parse arguments from command line
     args = parser.parse_args()
@@ -313,7 +287,7 @@ if __name__ == "__main__":
     loq_byCV_df = calculate_LOQ_byCV(quant_df_melted)
 
     # plot if requested
-    if plot_or_nah == True:
+    if plot_or_nah == 'y':
         sys.stderr.write("Building plots.\n")
         for peptide in tqdm(loq_byCV_df.peptide.unique()):
             make_plot(loq_byCV_df.loc[(loq_byCV_df['peptide'] == peptide)])

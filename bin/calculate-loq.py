@@ -6,7 +6,6 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import argparse
-import random
 from lmfit import Minimizer, Parameters
 from lmfit.models import LinearModel
 
@@ -15,8 +14,11 @@ DEFAULT_MIN_NOISE_POINTS = 2
 
 plt.style.use('seaborn-v0_8-whitegrid')
 
-np.random.seed(8888)
-random.seed(8888)
+# Note: global np.random.seed removed; each bootstrap replicate uses an
+# independent SeedSequence for thread-safe, reproducible resampling.
+# Note: std_noise in calculate_lod uses ddof=1 (sample std, Bessel-corrected).
+# np.std() defaults to ddof=0; ddof=1 is analytically correct for estimating
+# a population noise parameter from a small sample (consistent with loq_by_cv.py).
 
 # Force warnings (other than FutureWarning) to kill the script; this allows debugging numpy warnings.
 #import warnings
@@ -26,7 +28,33 @@ random.seed(8888)
 
 # Assume input file source, read in the data, and return a standard-format melted dataframe
 # output of this function is a melted dataframe with columns: peptide, curvepoint, area
+def _validate_conc_map(col_conc_map_file):
+    """Warn if the concentration map is empty or contains unannotated rows."""
+    try:
+        _map = pd.read_csv(col_conc_map_file)
+    except Exception:
+        return  # let the main read raise its own error
+    if _map.empty or 'concentration' not in _map.columns:
+        sys.stderr.write(
+            'WARNING: the concentration map appears to be blank or is missing '
+            'a "concentration" column. No curve points will be mapped.\n'
+        )
+        return
+    blank = _map['concentration'].isna() | (_map['concentration'].astype(str).str.strip() == '')
+    n_blank = int(blank.sum())
+    if n_blank:
+        sys.stderr.write(
+            f'WARNING: {n_blank} row(s) in the concentration map have a blank/unannotated '
+            f'concentration value and will be skipped:\n'
+        )
+        fname_col = 'filename' if 'filename' in _map.columns else _map.columns[0]
+        for fname in _map.loc[blank, fname_col].tolist():
+            sys.stderr.write(f'  {fname}\n')
+
+
 def read_input(filename, col_conc_map_file):
+    _validate_conc_map(col_conc_map_file)
+
     with open(filename, 'r') as f:
         header_line = f.readline()
 
@@ -73,7 +101,7 @@ def read_input(filename, col_conc_map_file):
         df_melted['curvepoint'].replace('', np.nan, inplace=True)
         df_melted.dropna(subset=['curvepoint'], inplace=True)
 
-        df_melted['area'].fillna(0, inplace=True)  # replace NA with 0
+        df_melted['area'] = df_melted['area'].fillna(0)  # replace NA with 0
 
     # If dia-nn *.pr_matrix.tsv input file, supply warning about normalizations 
     # and suggest using diann_report.tsv instead
@@ -309,7 +337,7 @@ def calculate_lod(model_params, df, std_mult, min_noise_points, min_linear_point
 
         # calculate the standard deviation for the noise segment
         intersection = (b_linear-b_noise) / (m_noise-m_linear)
-        std_noise = np.std(df['area'].loc[(df['curvepoint'].astype(float) < intersection)])
+        std_noise = np.std(df['area'].loc[(df['curvepoint'].astype(float) < intersection)], ddof=1)  # sample std (Bessel-corrected)
 
         if m_linear < 0:  # catch edge cases where there is only noise in the curve
             LOD = float('Inf')
@@ -334,7 +362,7 @@ def calculate_lod(model_params, df, std_mult, min_noise_points, min_linear_point
     else:
         intersection = (b_linear-b_noise) / (m_noise-m_linear)
 
-    std_noise = np.std(df['area'].loc[(df['curvepoint'].astype(float) < intersection)])
+    std_noise = np.std(df['area'].loc[(df['curvepoint'].astype(float) < intersection)], ddof=1)  # sample std (Bessel-corrected)
 
     min_curvepoint = df["curvepoint"].astype(float).min()
     if intersection <= min_curvepoint and min_noise_points < 1:
@@ -377,13 +405,8 @@ def calculate_loq(model_params, boot_results, cv_thresh=0.2):
         if 0 == good_cv.sum():
             LOQ = float('Inf')
         else:
-            # LOQ is the larger of:
-            #   - smallest intensity with good CV
-            #   - largest intensity with bad CV
-            LOQ = max(
-                boot_subset[good_cv]['boot_x'].min(),
-                boot_subset[~good_cv]['boot_x'].max()
-            )
+            # LOQ is the lowest concentration at which CV < threshold
+            LOQ = boot_subset[good_cv]['boot_x'].min()
 
             # LOQ edge cases
             if LOQ >= boot_results['boot_x'].max() or LOQ <= 0:
@@ -392,31 +415,28 @@ def calculate_loq(model_params, boot_results, cv_thresh=0.2):
     return LOQ
 
 
+# Module-level function so it can be referenced by bootstrap_many.
+# Uses a per-replicate SeedSequence for thread-safe, reproducible resampling.
+def _bootstrap_once(df, new_x, seed, model="auto"):
+    rng = np.random.default_rng(np.random.SeedSequence(seed))
+    while True:
+        resampled_df = df.sample(n=len(df), replace=True, random_state=rng)
+        if resampled_df['area'].nunique() > 1:
+            break
+
+    boot_x = np.array(resampled_df['curvepoint'], dtype=float)
+    boot_y = np.array(resampled_df['area'], dtype=float)
+    fit_result, mini_result = fit_by_lmfit_yang(boot_x, boot_y, model)
+
+    a = fit_result.params['a'].value
+    b = fit_result.params['b'].value
+    c = fit_result.params['c'].value
+
+    return np.maximum(new_x * a + b, c)
+
+
 # determine prediction interval by bootstrapping
 def bootstrap_many(df, new_x, num_bootreps=100, model="auto"):
-
-    def bootstrap_once(df, new_x, iter_num, model="auto"):
-
-#        resampled_df = df.sample(n=len(df), replace=True)
-
-        while True:
-            resampled_df = df.sample(n=len(df), replace=True)
-            if resampled_df['area'].nunique() > 1:
-                break
-
-        boot_x = np.array(resampled_df['curvepoint'], dtype=float)
-        boot_y = np.array(resampled_df['area'], dtype=float)
-        fit_result, mini_result = fit_by_lmfit_yang(boot_x, boot_y, model)
-
-        a = fit_result.params['a'].value
-        b = fit_result.params['b'].value
-        c = fit_result.params['c'].value
-
-        yresults = np.maximum(new_x * a + b, c)
-
-        iter_results = pd.DataFrame(data={'boot_x': new_x, iter_num: yresults})
-
-        return iter_results
 
     if df.empty or np.isnan(new_x).any():
         boot_summary = pd.DataFrame(columns=['boot_x', 'count', 'mean', 'std', 'min',
@@ -424,20 +444,23 @@ def bootstrap_many(df, new_x, num_bootreps=100, model="auto"):
 
     else:
         # Bootstrap the data (e.g. resample the data with replacement), eval prediction (new_y) at each new_x
-        boot_results = pd.DataFrame(data={'boot_x': new_x})
-        for i in range(num_bootreps):
-            iteration_results = bootstrap_once(df, new_x, i, model)
+        rows = [_bootstrap_once(df, new_x, i, model) for i in range(num_bootreps)]
 
-            boot_results = pd.merge(boot_results, iteration_results, on='boot_x')
+        # reshape the bootstrap results: rows=replicates, columns=x-grid points
+        mat = np.vstack(rows)   # shape (num_bootreps, len(new_x))
 
-        # reshape the bootstrap results to be columns=boot_x and rows=boot_y results (each iteration is a row)
-        boot_results = boot_results.T
-        boot_results.columns = boot_results.iloc[0]
-        boot_results = boot_results.drop(['boot_x'], axis='rows')
-
-        # calculate lower and upper 95% PI
-        boot_summary = (boot_results.describe(percentiles=[.05, .95])).T
-        boot_summary['boot_x'] = boot_summary.index
+        # calculate lower and upper 95% PI using numpy directly (avoids pandas describe overhead)
+        boot_summary = pd.DataFrame({
+            'boot_x': new_x,
+            'count':  float(mat.shape[0]),
+            'mean':   mat.mean(axis=0),
+            'std':    mat.std(axis=0, ddof=1),
+            'min':    mat.min(axis=0),
+            '5%':     np.percentile(mat, 5,  axis=0),
+            '50%':    np.percentile(mat, 50, axis=0),
+            '95%':    np.percentile(mat, 95, axis=0),
+            'max':    mat.max(axis=0),
+        })
 
         # calculate the bootstrapped CV
         boot_summary['boot_cv'] = boot_summary['std']/boot_summary['mean']
@@ -517,20 +540,15 @@ def build_plots(peptide, x, y, model_results, boot_results, num_bootreps, std_mu
     df = pd.DataFrame({"curvepoint": x, "area": y})
 
     # Instead of direct CV, match prediction boostrap and take CV of resampled _means_
-    means = pd.DataFrame()
+    # Collect per-rep means into a list, then concat once (avoids O(n²) concat-in-loop)
+    boot_means_list = []
     for i in range(num_bootreps):
-        # resample
         resampled_df = df.sample(n=len(df), replace=True)
-
-        # get the mean for each point
-        resampled_means = resampled_df.groupby("curvepoint").mean()
-
-        # append to frame
-        means = pd.concat([means, resampled_means], axis="rows")
+        boot_means_list.append(resampled_df.groupby("curvepoint")["area"].mean())
 
     # Compute the average/std across boostrapped means for each point
-    groups = means.groupby("curvepoint").agg({'area': ["mean", "std"]})
-    cv = groups[("area", "std")] / groups[("area", "mean")]
+    means = pd.concat(boot_means_list, axis=1).T
+    cv = means.std(axis=0) / means.mean(axis=0)
 
     plt.scatter(cv.index, cv, marker="o", color="tab:blue", label="_nolegend_")
 
@@ -626,6 +644,7 @@ def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_m
 
 
 def main():
+    _default_threads = max(1, (os.cpu_count() or 1) - 2)
     # usage statement and input descriptions
     parser = argparse.ArgumentParser(
         description='A  model for fitting calibration curve data. Takes calibration curve measurements as input, and \
@@ -664,7 +683,9 @@ def main():
     parser.add_argument('--model', default='auto', choices=['auto', 'piecewise'], 
                         help='Specify which model to use for LOQ fitting, auto (per peptide) or the original piecewise fit. \
                                 Default is auto (best AIC).')
-
+    parser.add_argument('--n_threads', default=_default_threads, type=int,
+                        help='number of worker processes for parallel peptide processing '
+                             f'(default: cpu_count - 2 = {_default_threads}; set to -1 to use all CPUs)')
 
 
     # parse arguments from command line
@@ -681,6 +702,7 @@ def main():
     plot_or_not = args.plot
     verbose = args.verbose
     model_type = args.model
+    n_threads = args.n_threads if args.n_threads != -1 else None  # None → ProcessPoolExecutor uses all CPUs
 
     # read in the data
     quant_df_melted = read_input(raw_file, col_conc_map_file)
@@ -695,7 +717,7 @@ def main():
                                         'stndev_noise'])
 
     # and awwaayyyyy we go~
-    with ProcessPoolExecutor() as exec:
+    with ProcessPoolExecutor(max_workers=n_threads) as exec:
         # First, submit each peptide as a job to the executor
         futures = []
         for peptide, subset in quant_df_melted.groupby('peptide'):
