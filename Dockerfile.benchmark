@@ -1,0 +1,26 @@
+# Pinned environment for the FROZEN 2021 benchmark script.
+#
+# Builds the exact 2021-era library stack that bin/calculate-loq_2021diann.py
+# was written for, so it reproduces faithful Pino-2020 LOD/LOQ values on any
+# machine without modifying the script. See doc/BENCHMARK.md for why the script
+# must not be run against modern pandas/matplotlib.
+#
+# Build:
+#   docker build -f Dockerfile.benchmark -t calcurves-benchmark:2021 .
+#
+# Run (mount cwd, same argument order as the main tool):
+#   docker run --rm --user $(id -u):$(id -g) -v `pwd`:`pwd` -w `pwd` \
+#       calcurves-benchmark:2021 <curve_data> <filename_concentration_map>
+FROM python:3.9
+
+# Matplotlib/Fontconfig need writable cache dirs when running as an arbitrary uid.
+ENV MPLCONFIGDIR=/tmp/matplotlib_cache
+ENV HOME=/tmp/home
+
+ADD bin/calculate-loq_2021diann.py /app/
+ADD requirements-2021.txt /app/
+WORKDIR /app
+
+RUN pip install -v --no-cache-dir -r requirements-2021.txt
+
+ENTRYPOINT ["python3", "/app/calculate-loq_2021diann.py"]

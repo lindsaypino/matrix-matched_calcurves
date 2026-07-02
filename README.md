@@ -81,3 +81,11 @@ To run:
 ```bash
 docker run --rm --user $(id -u):$(id -g) -v `pwd`:`pwd` -w `pwd` matrix-matched_calcurves:latest <curve_data> <filename_concentraion_map>
 ```
+
+**BENCHMARK.**
+
+`bin/calculate-loq_2021diann.py` is a frozen copy of the 2021 (Pino 2020)
+method, kept for comparing old vs new LOD/LOQ calculations. It must be run in
+its pinned 2021-era environment (`requirements-2021.txt` / `Dockerfile.benchmark`)
+— newer pandas/matplotlib silently change its results. See
+[doc/BENCHMARK.md](doc/BENCHMARK.md).

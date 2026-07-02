@@ -1,0 +1,21 @@
+# Pinned 2021-era environment for the FROZEN benchmark script
+# bin/calculate-loq_2021diann.py.
+#
+# This script reproduces the Pino 2020 LOD/LOQ computation and is intentionally
+# NOT modernized. It must run against the library versions it was written for.
+# Newer pandas (>=2.0 removed APIs; >=3.0 copy-on-write) silently changes its
+# results -- e.g. `df['area'].fillna(0, inplace=True)` becomes a no-op under
+# copy-on-write, leaving NaNs that corrupt std_noise/LOD/LOQ with no error.
+# Likewise matplotlib >=3.6 dropped the 'seaborn-whitegrid' style name.
+#
+# Do NOT bump these to "fix" warnings. If a run fails, fix the environment,
+# not the frozen script. See doc/BENCHMARK.md.
+#
+# The main tool (bin/calculate-loq.py) tracks current libraries via
+# requirements.txt -- this file is for the benchmark only.
+numpy==1.21.6
+pandas==1.3.5
+matplotlib==3.4.3
+scipy==1.7.3
+lmfit==1.0.3
+tqdm==4.62.3
