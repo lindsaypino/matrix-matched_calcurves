@@ -1,3 +1,9 @@
 # Ignore desktop.ini files
 desktop.ini
 **/desktop.ini
+
+# Python caches / test artifacts
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
