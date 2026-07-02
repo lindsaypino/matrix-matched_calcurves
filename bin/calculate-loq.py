@@ -1,7 +1,9 @@
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures.process import BrokenProcessPool
 import pandas as pd
 import os
 import sys
+import traceback
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -12,7 +14,17 @@ from lmfit.models import LinearModel
 DEFAULT_MIN_LINEAR_POINTS = 1
 DEFAULT_MIN_NOISE_POINTS = 2
 
-plt.style.use('seaborn-v0_8-whitegrid')
+# Set the plot style, tolerating both the modern name (matplotlib >=3.6) and the
+# legacy 'seaborn-whitegrid'. This runs at import time in every worker process,
+# so a hard failure here would kill workers on startup and surface only as an
+# opaque BrokenProcessPool (see issue #11).
+try:
+    plt.style.use('seaborn-v0_8-whitegrid')
+except OSError:
+    try:
+        plt.style.use('seaborn-whitegrid')
+    except OSError:
+        pass  # style is cosmetic; never let it break a run
 
 # Note: global np.random.seed removed; each bootstrap replicate uses an
 # independent SeedSequence for thread-safe, reproducible resampling.
@@ -685,7 +697,9 @@ def main():
                                 Default is auto (best AIC).')
     parser.add_argument('--n_threads', default=_default_threads, type=int,
                         help='number of worker processes for parallel peptide processing '
-                             f'(default: cpu_count - 2 = {_default_threads}; set to -1 to use all CPUs)')
+                             f'(default: cpu_count - 2 = {_default_threads}; set to -1 to use all CPUs; '
+                             'set to 1 to run serially in-process, which is the recommended way to '
+                             'debug a worker crash / BrokenProcessPool)')
 
 
     # parse arguments from command line
@@ -711,44 +725,83 @@ def main():
     if multiplier_file:
         quant_df_melted = associate_multiplier(quant_df_melted, multiplier_file)
 
-    # initialize empty data frame to store figures of merit
-    peptide_fom = pd.DataFrame(columns=['peptide', 'LOD', 'LOQ',
-                                        'slope_linear', 'intercept_linear', 'intercept_noise',
-                                        'stndev_noise'])
+    # build the list of per-peptide jobs (skip empty/nan peptide groups)
+    jobs = [(peptide, subset)
+            for peptide, subset in quant_df_melted.groupby('peptide')
+            if not subset.empty]
 
-    # and awwaayyyyy we go~
-    with ProcessPoolExecutor(max_workers=n_threads) as exec:
-        # First, submit each peptide as a job to the executor
-        futures = []
-        for peptide, subset in quant_df_melted.groupby('peptide'):
-            if subset.empty:  # if the peptide is nan, skip it and move on to the next peptide
-                continue
+    headers = ['peptide', 'LOD', 'LOQ', 'slope_linear', 'intercept_linear', 'intercept_noise', 'stndev_noise']
+    output_file = os.path.join(output_dir, 'figuresofmerit.csv')
 
-            futures.append(exec.submit(process_peptide, bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, subset, verbose, model_type))
+    def job_args(peptide, subset):
+        return (bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult,
+                min_noise_points, min_linear_points, subset, verbose, model_type)
 
-        # Create output file with headers
-        output_file = os.path.join(output_dir, 'figuresofmerit.csv')
-        headers = ['peptide', 'LOD', 'LOQ', 'slope_linear', 'intercept_linear', 'intercept_noise', 'stndev_noise']
+    def init_output():
+        # (re)create the output file with just the header row
         with open(output_file, 'w') as f:
             f.write(','.join(headers) + '\n')
             f.flush()
             os.fsync(f.fileno())
 
-        # Process results as they complete so that if it randomly errors out, you at least have some output results
-        for future in tqdm(as_completed(futures), total=len(futures)):
-            try:
-                result_df = future.result()
-                # Use a file lock to prevent concurrent writes from the threads
-                with open(output_file, 'a') as f:
-                    result_df.to_csv(f, header=False, index=False)
-                    f.flush()
-                    os.fsync(f.fileno())
-                peptide_fom = pd.concat([peptide_fom, result_df], ignore_index=True, axis=0)
-            except Exception as e:
-                print(f"Error processing result: {str(e)}")
+    def append_row(result_df):
+        with open(output_file, 'a') as f:
+            result_df.to_csv(f, header=False, index=False)
+            f.flush()
+            os.fsync(f.fileno())
 
-    #peptide_fom.to_csv(path_or_buf=os.path.join(output_dir, 'figuresofmerit.csv'),
-    #                   index=False)
+    def run_serial():
+        # Process peptides one at a time in-process. Because each bootstrap
+        # replicate is seeded by its own SeedSequence, this yields output
+        # identical to the parallel path -- and any error surfaces here with a
+        # full traceback instead of an opaque BrokenProcessPool.
+        for peptide, subset in tqdm(jobs):
+            try:
+                result_df = process_peptide(*job_args(peptide, subset))
+            except Exception:
+                sys.stderr.write('ERROR processing peptide %s:\n' % peptide)
+                traceback.print_exc()
+                continue
+            append_row(result_df)
+
+    def run_parallel():
+        # Raises BrokenProcessPool (propagated to the caller) if a worker dies
+        # abruptly, so the caller can fall back to serial processing.
+        with ProcessPoolExecutor(max_workers=n_threads) as pool:
+            future_to_peptide = {
+                pool.submit(process_peptide, *job_args(peptide, subset)): peptide
+                for peptide, subset in jobs
+            }
+            for future in tqdm(as_completed(future_to_peptide), total=len(future_to_peptide)):
+                peptide = future_to_peptide[future]
+                try:
+                    result_df = future.result()
+                except BrokenProcessPool:
+                    raise  # a worker crashed; bail out so we can retry serially
+                except Exception:
+                    sys.stderr.write('ERROR processing peptide %s:\n' % peptide)
+                    traceback.print_exc()
+                    continue
+                append_row(result_df)
+
+    # and awwaayyyyy we go~
+    init_output()
+    if n_threads == 1:
+        # explicit serial mode (also the recommended way to debug worker crashes)
+        run_serial()
+    else:
+        try:
+            run_parallel()
+        except BrokenProcessPool:
+            sys.stderr.write(
+                '\nWARNING: a worker process was terminated abruptly (BrokenProcessPool).\n'
+                'This usually means an out-of-memory condition or a native-library crash\n'
+                '(numpy/scipy/lmfit/matplotlib) in a worker. Falling back to serial\n'
+                'processing so the run can complete and the underlying error is shown.\n'
+                'To skip the process pool entirely, rerun with --n_threads 1.\n\n'
+            )
+            init_output()  # reset so partially-written parallel rows are not duplicated
+            run_serial()
 
 
 if __name__ == "__main__":
