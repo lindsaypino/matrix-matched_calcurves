@@ -13,6 +13,7 @@ from lmfit.models import LinearModel
 
 DEFAULT_MIN_LINEAR_POINTS = 1
 DEFAULT_MIN_NOISE_POINTS = 2
+DEFAULT_MIN_SATURATION_POINTS = 2  # curve points required in the saturation plateau for a trilinear (ULOQ) fit
 
 # Set the plot style, tolerating both the modern name (matplotlib >=3.6) and the
 # legacy 'seaborn-whitegrid'. This runs at import time in every worker process,
@@ -248,90 +249,145 @@ def linregress(data):
     return result.params["slope"].value, result.params["intercept"].value
 
 
-# yang's solve for the piecewise fit using lmfit Minimize function
-def fit_by_lmfit_yang(x, y, model):
+# residual for the unified segmented model. The bilinear (noise + linear) models
+# leave c_high == +inf, so np.minimum(..., inf) collapses back to the original
+# np.maximum(c, a*x + b); the trilinear model adds a finite saturation ceiling.
+def _unified_resid(params, x, data, weight):
+    a = params['a'].value
+    b = params['b'].value
+    c = params['c'].value
+    c_high = params['c_high'].value if 'c_high' in params else np.inf
+    model_vals = np.minimum(np.maximum(a * x + b, c), c_high)
+    return (model_vals - data) * weight
 
-    # residual function
-    def fcn2min(params, x, data, weight):
-        a = params['a'].value
-        b = params['b'].value
-        c = params['c'].value
-        model_vals = np.maximum(c, a * x + b)
-        return (model_vals - data) * weight
 
-    # parameter initialization
-    def initialize_params(x, y, weights):
-        subsetdf = pd.DataFrame({"curvepoint": pd.to_numeric(x), "area": y, "weight": weights})
+# seth's improved initialization for the noise + linear (bilinear) model
+def _initialize_params_auto(x, y, weights):
+    subsetdf = pd.DataFrame({"curvepoint": pd.to_numeric(x), "area": y, "weight": weights})
 
-        # Initial guess for where noise is
-        curvepoints = list(sorted(subsetdf["curvepoint"].unique()))
-        noise_mask = subsetdf["curvepoint"].apply(lambda x: x in curvepoints[:2])
+    # Initial guess for where noise is
+    curvepoints = list(sorted(subsetdf["curvepoint"].unique()))
+    noise_mask = subsetdf["curvepoint"].apply(lambda v: v in curvepoints[:2])
 
-        noise_intercept = np.mean(subsetdf["area"][noise_mask])
+    noise_intercept = np.mean(subsetdf["area"][noise_mask])
 
-        # Use linear regression above intersection
-        reg_data = subsetdf[~noise_mask]
-        linear_slope, linear_intercept = linregress(reg_data)
+    # Use linear regression above intersection
+    reg_data = subsetdf[~noise_mask]
+    linear_slope, linear_intercept = linregress(reg_data)
 
-        # if the noise intercept is lower than the linear intercept, increase it to the linear
-        if noise_intercept <= linear_intercept:
-            noise_intercept = linear_intercept * 1.05
+    # if the noise intercept is lower than the linear intercept, increase it to the linear
+    if noise_intercept <= linear_intercept:
+        noise_intercept = linear_intercept * 1.05
 
-        return linear_slope, linear_intercept, noise_intercept
-    
-    def initialize_params_legacy(x, y):
-        # 2019 Pino model uses slope from two highest points, intercept at lowest
-        subsetdf = pd.DataFrame({'curvepoint': pd.to_numeric(x), 'area': y})
-        mean_y = subsetdf.groupby('curvepoint')['area'].mean()  # find the mean response area for each curve point
+    return linear_slope, linear_intercept, noise_intercept
 
-        # find the top point, second-top point, and bottom points of the curve data
-        conc_list = list(set(x))
-        top_point = max(conc_list)
-        conc_list.remove(top_point)
-        second_top = max(conc_list)
-        bottom_point = min(conc_list)
 
-        # using the means, calculate a slope (y1-y2/x1-x2)
-        linear_slope = (mean_y[second_top]-mean_y[top_point]) / (second_top-top_point)
-        # find the noise intercept using average of bottom three points
-        noise_intercept = mean_y[bottom_point]
-        # find the linear intercept using linear slope (b = y-mx) and the top point
-        linear_intercept = mean_y[top_point] - (linear_slope*top_point)
+# 2019 Pino model uses slope from two highest points, intercept at lowest
+def _initialize_params_legacy(x, y):
+    subsetdf = pd.DataFrame({'curvepoint': pd.to_numeric(x), 'area': y})
+    mean_y = subsetdf.groupby('curvepoint')['area'].mean()  # find the mean response area for each curve point
 
-        # edge case catch?
-        if noise_intercept < linear_intercept:
-            noise_intercept = linear_intercept * 1.05
+    # find the top point, second-top point, and bottom points of the curve data
+    conc_list = list(set(x))
+    top_point = max(conc_list)
+    conc_list.remove(top_point)
+    second_top = max(conc_list)
+    bottom_point = min(conc_list)
 
-        return linear_slope, linear_intercept, noise_intercept
+    # using the means, calculate a slope (y1-y2/x1-x2)
+    linear_slope = (mean_y[second_top]-mean_y[top_point]) / (second_top-top_point)
+    # find the noise intercept using average of bottom three points
+    noise_intercept = mean_y[bottom_point]
+    # find the linear intercept using linear slope (b = y-mx) and the top point
+    linear_intercept = mean_y[top_point] - (linear_slope*top_point)
+
+    # edge case catch?
+    if noise_intercept < linear_intercept:
+        noise_intercept = linear_intercept * 1.05
+
+    return linear_slope, linear_intercept, noise_intercept
+
+
+# fit a single concrete model. 'piecewise'/'bilinear' fit a noise plateau + linear
+# segment; 'trilinear' adds a high-signal saturation plateau (to capture the ULOQ).
+# The returned result's params always expose a, b, c (noise/low plateau) and
+# c_high (saturation ceiling; +inf for the bilinear models).
+def _fit_one_model(x, y, weights, model):
+    params = Parameters()
+
+    if model == 'piecewise':
+        initial_a, initial_b, initial_c = _initialize_params_legacy(x, y)
+    else:  # 'bilinear' and 'trilinear' both use seth's improved initialization
+        initial_a, initial_b, initial_c = _initialize_params_auto(x, y, weights)
+
+    params.add('a', value=initial_a, min=0.0, vary=True)  # slope signal
+    params.add('b', value=initial_b, vary=True)  # intercept signal
+    params.add('c_minus_b', value=(initial_c - initial_b), min=0.0, vary=True)
+    params.add('c', expr='b + c_minus_b')  # noise/low plateau
+
+    if model == 'trilinear':
+        # initialize the saturation ceiling from the mean of the top two points
+        mean_y = pd.DataFrame({'x': np.asarray(x, float), 'y': np.asarray(y, float)}) \
+            .groupby('x')['y'].mean().sort_index()
+        chigh0 = float(mean_y.iloc[-2:].mean())
+        init_chigh_minus_c = max(chigh0 - initial_c, np.finfo(float).eps)
+        params.add('chigh_minus_c', value=init_chigh_minus_c, min=0.0, vary=True)
+        params.add('c_high', expr='c + chigh_minus_c')  # saturation ceiling > noise
+    else:
+        params.add('c_high', value=np.inf, vary=False)  # no ceiling -> bilinear
+
+    minner = Minimizer(_unified_resid, params, fcn_args=(x, y, weights))
+    return minner.minimize(), minner
+
+
+# yang's solve for the segmented fit using lmfit Minimize function.
+# model: 'piecewise' (legacy-init bilinear), 'bilinear' (improved-init bilinear),
+#        'trilinear' (noise + linear + saturation), or 'auto' (pick bilinear vs
+#        trilinear by AIC, adding a saturation ceiling only when the top of the
+#        curve actually bends over -- i.e. an upper limit of quantitation).
+def fit_by_lmfit_yang(x, y, model, min_saturation_points=None):
+    if min_saturation_points is None:
+        min_saturation_points = DEFAULT_MIN_SATURATION_POINTS
 
     # always compute weights
     weights = np.minimum(1.0 / (np.sqrt(x) + np.finfo(float).eps), 1000)
 
-    # initialize Parameters object
-    params = Parameters()
+    if model in ('piecewise', 'bilinear', 'trilinear'):
+        return _fit_one_model(x, y, weights, model)
 
-    # build Parameters() differently per user-specified model
-    if model == 'piecewise':
-        # if the model is piecewise, use the legacy method
-        initial_a, initial_b, initial_c = initialize_params_legacy(x,y)
-        initial_cminusb = initial_c - initial_b
-        params.add('a', value=initial_a, min=0.0, vary=True)  # slope signal
-        params.add('b', value=initial_b, vary=True)  # intercept signal
-        params.add('c_minus_b', value=initial_cminusb, min=0.0, vary=True)
-        params.add('c', expr='b + c_minus_b')
+    # model == 'auto': fit the bilinear baseline, then try trilinear and keep it
+    # only if the saturation plateau is real (better AIC + supported by the data).
+    res_bi, min_bi = _fit_one_model(x, y, weights, 'bilinear')
 
-    elif model == "auto":
-        # otherwise, use seth's improved initialization method
-        initial_a, initial_b, initial_c = initialize_params(x, y, weights)
-        params.add('a',         value=initial_a,     min=0.0, vary=True)
-        params.add('b',         value=initial_b,             vary=True)
-        params.add('c_minus_b', value=(initial_c - initial_b), min=0.0, vary=True)
-        params.add('c',         expr='b + c_minus_b')
+    x_arr = np.asarray(x, dtype=float)
+    if len(np.unique(x_arr)) < 5:
+        # too few distinct points to justify a third (saturation) segment
+        return res_bi, min_bi
 
-    # run lmfit
-    minner = Minimizer(fcn2min, params, fcn_args=(x, y, weights))
-    result = minner.minimize()
-    return result, minner
+    try:
+        res_tri, min_tri = _fit_one_model(x, y, weights, 'trilinear')
+    except Exception:
+        return res_bi, min_bi
+
+    a = res_tri.params['a'].value
+    b = res_tri.params['b'].value
+    c_high = res_tri.params['c_high'].value
+    # saturation onset = where the linear segment reaches the ceiling
+    onset = (c_high - b) / a if a > 0 else np.inf
+    n_distinct = len(np.unique(x_arr))
+    n_saturated = len(np.unique(x_arr[x_arr >= onset]))  # distinct curve points in the plateau
+
+    y_max = np.max(y)
+    supported = (
+        np.isfinite(c_high)
+        and c_high < y_max                           # ceiling actually below the top signal
+        and c_high >= 0.5 * y_max                    # ...but a genuinely HIGH plateau, not a low spurious one
+        and onset > 0                                # saturation onset at a positive concentration
+        and n_saturated >= min_saturation_points     # enough points in the plateau
+        and 2 * n_saturated <= n_distinct            # plateau is a top-end minority, not most of the curve
+        and getattr(res_tri, 'aic', np.inf) < getattr(res_bi, 'aic', np.inf)
+    )
+    return (res_tri, min_tri) if supported else (res_bi, min_bi)
 
 
 # find the intersection of the noise and linear regime
@@ -438,6 +494,36 @@ def calculate_loq(model_params, boot_results, cv_thresh=0.2):
     return LOQ
 
 
+# find the upper limit of quantitation from the saturation plateau of a trilinear
+# fit -- the mirror image of the LOD calculation at the top of the curve. Where the
+# rising linear segment reaches the saturation ceiling (c_high), the response is no
+# longer proportional to concentration. Bilinear fits (c_high == +inf) have no ULOQ.
+def calculate_uloq(slope_linear, intercept_linear, c_high, df, std_mult, min_saturation_points):
+    if not np.isfinite(c_high) or slope_linear <= 0:
+        return float('inf')  # no saturation ceiling -> no upper limit detected
+
+    onset = (c_high - intercept_linear) / slope_linear  # linear segment meets the ceiling
+    cps = df['curvepoint'].astype(float)
+    sat_mask = cps >= onset
+
+    # require enough distinct curve points in the saturated plateau to trust it
+    if cps[sat_mask].nunique() < min_saturation_points:
+        return float('inf')
+
+    sat_areas = df['area'].loc[sat_mask]
+    std_sat = np.std(sat_areas, ddof=1) if sat_areas.shape[0] > 1 else np.nan
+
+    if np.isfinite(std_sat):
+        # back off from the ceiling by std_mult standard deviations, mirroring LOD
+        ULOQ = (c_high - (std_mult * std_sat) - intercept_linear) / slope_linear
+    else:
+        ULOQ = onset
+
+    if not np.isfinite(ULOQ) or ULOQ <= 0:
+        return float('inf')
+    return ULOQ
+
+
 # Module-level function so it can be referenced by bootstrap_many.
 # Uses a per-replicate SeedSequence for thread-safe, reproducible resampling.
 def _bootstrap_once(df, new_x, seed, model="auto"):
@@ -454,8 +540,9 @@ def _bootstrap_once(df, new_x, seed, model="auto"):
     a = fit_result.params['a'].value
     b = fit_result.params['b'].value
     c = fit_result.params['c'].value
+    c_high = fit_result.params['c_high'].value if 'c_high' in fit_result.params else np.inf
 
-    return np.maximum(new_x * a + b, c)
+    return np.minimum(np.maximum(new_x * a + b, c), c_high)
 
 
 # determine prediction interval by bootstrapping
@@ -492,7 +579,8 @@ def bootstrap_many(df, new_x, num_bootreps=100, model="auto"):
 
 
 # plot results
-def build_plots(peptide, x, y, model_results, boot_results, num_bootreps, std_mult, cv_thresh, output_dir):
+def build_plots(peptide, x, y, model_results, boot_results, num_bootreps, std_mult, cv_thresh, output_dir,
+                c_high=np.inf, ULOQ=np.inf):
 
     SMALL_SIZE = 18
     MEDIUM_SIZE = 20
@@ -537,6 +625,10 @@ def build_plots(peptide, x, y, model_results, boot_results, num_bootreps, std_mu
     if slope_linear > 0:  # add linear segment line
         add_line_to_plot(slope_linear, intercept_linear, 'linear', '-', 'g')
 
+    # add the saturation ceiling (trilinear fits only; c_high is finite)
+    if np.isfinite(c_high):
+        plt.axhline(y=c_high, color='g', linestyle='-')
+
     plt.axvline(x=LOD,
                 color='m',
                 label=('LOD = %.3e' % LOD))
@@ -544,6 +636,11 @@ def build_plots(peptide, x, y, model_results, boot_results, num_bootreps, std_mu
     plt.axvline(x=LOQ,
                 color='c',
                 label=('LOQ = %.3e' % LOQ))
+
+    if np.isfinite(ULOQ):
+        plt.axvline(x=ULOQ,
+                    color='orange',
+                    label=('ULOQ = %.3e' % ULOQ))
 
     plt.ylabel('signal')
 
@@ -608,7 +705,7 @@ def build_plots(peptide, x, y, model_results, boot_results, num_bootreps, std_mu
     plt.close()
 
 
-def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, subset, verbose, model_choice):
+def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, min_saturation_points, subset, verbose, model_choice):
     # sort the dataframe with x values in strictly ascending order
     subset = subset.sort_values(by='curvepoint', ascending=True)
 
@@ -617,11 +714,21 @@ def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_m
     y = np.array(subset['area'], dtype=float)
 
     # set up the model and the parameters
-    result, minner = fit_by_lmfit_yang(x, y, model_choice)
+    result, minner = fit_by_lmfit_yang(x, y, model_choice, min_saturation_points=min_saturation_points)
     slope_noise = 0.0  # noise segment is flat
     slope_linear = result.params['a'].value
     intercept_linear = result.params['b'].value
     intercept_noise = result.params['c'].value
+    c_high = result.params['c_high'].value if 'c_high' in result.params else np.inf
+
+    # record which concrete model was chosen so the bootstrap keeps the same shape
+    # (re-running 'auto' selection on every replicate could flip models and add noise)
+    if np.isfinite(c_high):
+        boot_model = 'trilinear'
+    elif model_choice == 'piecewise':
+        boot_model = 'piecewise'
+    else:
+        boot_model = 'bilinear'
 
     model_parameters = np.asarray([slope_noise, intercept_noise, slope_linear, intercept_linear])
 
@@ -630,14 +737,27 @@ def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_m
 
     model_parameters = np.append(model_parameters, lod_vals)
 
+    # upper limit of quantitation from the saturation plateau (inf when bilinear)
+    ULOQ = calculate_uloq(slope_linear, intercept_linear, c_high, subset, std_mult, min_saturation_points)
+    # a valid quantifiable range requires ULOQ above LOD; otherwise the ceiling fit
+    # is degenerate and there is effectively no usable upper limit
+    if np.isfinite(ULOQ) and np.isfinite(LOD) and ULOQ <= LOD:
+        ULOQ = float('inf')
+
     if not np.isfinite(LOD):
         LOQ = np.inf
         bootstrap_df = bootstrap_many(subset, [np.nan], num_bootreps=0)  # shortcut to get empty DF
     else:
-        # calculate coefficients of variation for discrete bins over the linear range (default bins=100)
-        x_i = np.linspace(LOD, max(x), num=100, dtype=float)
+        # calculate coefficients of variation for discrete bins over the quantifiable
+        # linear range: from the LOD up to the ULOQ (or the top curve point when no
+        # saturation plateau was detected). Evaluating CVs inside the saturated region
+        # would be meaningless because the modeled response is flat there.
+        upper = min(ULOQ, max(x)) if np.isfinite(ULOQ) else max(x)
+        if upper <= LOD:
+            upper = max(x)
+        x_i = np.linspace(LOD, upper, num=100, dtype=float)
 
-        bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps, model=model_choice)
+        bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps, model=boot_model)
 
         if verbose == 'y':
             bootstrap_df.to_csv(path_or_buf=os.path.join(output_dir,
@@ -652,14 +772,15 @@ def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_m
         # make a plot of the curve points and the fit, in both linear and log space
         # build_plots(x, y, model_parameters, bootstrap_df, std_mult)
         try:
-            build_plots(peptide, x, y, model_parameters, bootstrap_df, bootreps, std_mult, cv_thresh, output_dir)
+            build_plots(peptide, x, y, model_parameters, bootstrap_df, bootreps, std_mult, cv_thresh, output_dir,
+                        c_high=c_high, ULOQ=ULOQ)
             # continue
         except ValueError:
             sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
 
     # make a dataframe row with the peptide and its figures of merit
-    new_row = [peptide, LOD, LOQ, slope_linear, intercept_linear, intercept_noise, std_noise]
-    new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ',
+    new_row = [peptide, LOD, LOQ, ULOQ, slope_linear, intercept_linear, intercept_noise, std_noise]
+    new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ', 'ULOQ',
                                                   'slope_linear', 'intercept_linear', 'intercept_noise',
                                                   'stndev_noise'])
 
@@ -695,6 +816,10 @@ def main():
                         help="specify the minimum required curve points required below the LOD")
     parser.add_argument('--min_linear_points', default=DEFAULT_MIN_LINEAR_POINTS, type=int,
                         help="specify the minimum required curve points required above the LOD")
+    parser.add_argument('--min_saturation_points', default=DEFAULT_MIN_SATURATION_POINTS, type=int,
+                        help="minimum curve points in the high-signal saturation plateau required for the "
+                             "'auto' model to adopt a trilinear (noise + linear + saturation) fit and report a "
+                             "ULOQ; raise to be more conservative about calling saturation")
     parser.add_argument('--multiplier_file', type=str,
                         help='use a single-point multiplier associated with the curve data peptides')
     parser.add_argument('--output_path', default=os.getcwd(), type=str,
@@ -703,9 +828,12 @@ def main():
                         help='yes/no (y/n) to create individual calibration curve plots for each peptide')
     parser.add_argument('--verbose', default='n', type=str,
                         help='output a detailed summary of the bootstrapping step')
-    parser.add_argument('--model', default='auto', choices=['auto', 'piecewise'], 
-                        help='Specify which model to use for LOQ fitting, auto (per peptide) or the original piecewise fit. \
-                                Default is auto (best AIC).')
+    parser.add_argument('--model', default='auto', choices=['auto', 'piecewise', 'bilinear', 'trilinear'],
+                        help='Which curve model to fit: "auto" picks bilinear (noise + linear) vs trilinear \
+                                (noise + linear + saturation) per peptide by AIC, adding a saturation ceiling / ULOQ \
+                                only when the top of the curve bends over; "piecewise" is the original legacy-init \
+                                bilinear fit; "bilinear" forces the improved-init noise+linear fit; "trilinear" forces \
+                                the noise+linear+saturation fit. Default is auto.')
     parser.add_argument('--n_threads', default=_default_threads, type=int,
                         help='number of worker processes for parallel peptide processing '
                              f'(default: cpu_count - 2 = {_default_threads}; set to -1 to use all CPUs; '
@@ -722,6 +850,7 @@ def main():
     bootreps = args.bootreps
     min_noise_points = args.min_noise_points
     min_linear_points = args.min_linear_points
+    min_saturation_points = args.min_saturation_points
     multiplier_file = args.multiplier_file
     output_dir = args.output_path
     plot_or_not = args.plot
@@ -741,12 +870,12 @@ def main():
             for peptide, subset in quant_df_melted.groupby('peptide')
             if not subset.empty]
 
-    headers = ['peptide', 'LOD', 'LOQ', 'slope_linear', 'intercept_linear', 'intercept_noise', 'stndev_noise']
+    headers = ['peptide', 'LOD', 'LOQ', 'ULOQ', 'slope_linear', 'intercept_linear', 'intercept_noise', 'stndev_noise']
     output_file = os.path.join(output_dir, 'figuresofmerit.csv')
 
     def job_args(peptide, subset):
         return (bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult,
-                min_noise_points, min_linear_points, subset, verbose, model_type)
+                min_noise_points, min_linear_points, min_saturation_points, subset, verbose, model_type)
 
     def init_output():
         # (re)create the output file with just the header row
