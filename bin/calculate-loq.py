@@ -376,9 +376,20 @@ def calculate_lod(model_params, df, std_mult, min_noise_points, min_linear_point
 
     std_noise = np.std(df['area'].loc[(df['curvepoint'].astype(float) < intersection)], ddof=1)  # sample std (Bessel-corrected)
 
-    min_curvepoint = df["curvepoint"].astype(float).min()
-    if intersection <= min_curvepoint and min_noise_points < 1:
-        LOD = min_curvepoint ## TODO replace this with whatever the analchem definition of LOD
+    curvepoints = np.sort(df["curvepoint"].astype(float).unique())
+    min_curvepoint = curvepoints[0]
+    # Lowest *nonzero* curve point = smallest quantity actually spiked in. When
+    # the noise/signal intersection collapses at or below this point, the fit
+    # resolved no noise plateau (the linear range covers all spiked points). The
+    # initializer floors the noise intercept at 1.05*linear_intercept, so for a
+    # curve with a 0-concentration point this intersection lands at a tiny
+    # *positive* value rather than <= 0; comparing against min_curvepoint (=0)
+    # would never trigger. Compare against the lowest spiked point instead so
+    # the min_noise_points=0 rescue fires as intended (see paper Methods).
+    spiked = curvepoints[curvepoints > 0]
+    lowest_spiked = spiked[0] if len(spiked) else min_curvepoint
+    if intersection <= lowest_spiked and min_noise_points < 1:
+        LOD = lowest_spiked  ## no noise plateau resolved: LOD is the lowest tested dilution
         std_noise = np.nan
     elif m_linear <= 0:  # catch edge cases where there is only noise in the curve
         LOD = float('Inf')
