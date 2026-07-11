@@ -273,6 +273,11 @@ def _initialize_params_auto(x, y, weights):
 
     # Use linear regression above intersection
     reg_data = subsetdf[~noise_mask]
+    # A bootstrap resample can land entirely in the lowest two curve points,
+    # leaving no points above the noise region to regress. Fall back to the full
+    # resample so the linear guess stays defined (np.polyfit needs a non-empty x).
+    if len(reg_data) < 2:
+        reg_data = subsetdf
     linear_slope, linear_intercept = linregress(reg_data)
 
     # if the noise intercept is lower than the linear intercept, increase it to the linear
@@ -705,7 +710,27 @@ def build_plots(peptide, x, y, model_results, boot_results, num_bootreps, std_mu
     plt.close()
 
 
-def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, min_saturation_points, subset, verbose, model_choice):
+FOM_COLUMNS = ['peptide', 'LOD', 'LOQ', 'ULOQ', 'slope_linear', 'intercept_linear',
+               'intercept_noise', 'stndev_noise', 'notes']
+
+
+def process_peptide(*args):
+    """Wrapper around the per-peptide fit that never drops a peptide: if the fit or
+    bootstrap raises, the peptide still gets an output row with non-finite figures of
+    merit and the error recorded in the 'notes' column, instead of being silently
+    skipped. peptide is the 4th positional argument (see _process_peptide_core)."""
+    peptide = args[3]
+    try:
+        return _process_peptide_core(*args)
+    except Exception as exc:
+        note = ('%s: %s' % (type(exc).__name__, exc)).replace('\n', ' ').replace('\r', ' ')
+        note = note.replace(',', ';')[:300]  # keep the CSV row single-field and one line
+        sys.stderr.write('WARNING: peptide %s failed to fit; recorded with note: %s\n' % (peptide, note))
+        row = [peptide, np.inf, np.inf, np.inf, np.nan, np.nan, np.nan, np.nan, note]
+        return pd.DataFrame([row], columns=FOM_COLUMNS)
+
+
+def _process_peptide_core(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, min_saturation_points, subset, verbose, model_choice):
     # sort the dataframe with x values in strictly ascending order
     subset = subset.sort_values(by='curvepoint', ascending=True)
 
@@ -778,11 +803,9 @@ def process_peptide(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_m
         except ValueError:
             sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
 
-    # make a dataframe row with the peptide and its figures of merit
-    new_row = [peptide, LOD, LOQ, ULOQ, slope_linear, intercept_linear, intercept_noise, std_noise]
-    new_df_row = pd.DataFrame([new_row], columns=['peptide', 'LOD', 'LOQ', 'ULOQ',
-                                                  'slope_linear', 'intercept_linear', 'intercept_noise',
-                                                  'stndev_noise'])
+    # make a dataframe row with the peptide and its figures of merit ('' note = fit OK)
+    new_row = [peptide, LOD, LOQ, ULOQ, slope_linear, intercept_linear, intercept_noise, std_noise, '']
+    new_df_row = pd.DataFrame([new_row], columns=FOM_COLUMNS)
 
     return new_df_row
 
@@ -870,12 +893,19 @@ def main():
             for peptide, subset in quant_df_melted.groupby('peptide')
             if not subset.empty]
 
-    headers = ['peptide', 'LOD', 'LOQ', 'ULOQ', 'slope_linear', 'intercept_linear', 'intercept_noise', 'stndev_noise']
+    headers = FOM_COLUMNS
     output_file = os.path.join(output_dir, 'figuresofmerit.csv')
 
     def job_args(peptide, subset):
         return (bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult,
                 min_noise_points, min_linear_points, min_saturation_points, subset, verbose, model_type)
+
+    def note_row(peptide, exc):
+        # never drop a peptide: emit a row with non-finite FOMs and the error note
+        note = ('%s: %s' % (type(exc).__name__, exc)).replace('\n', ' ').replace('\r', ' ')
+        note = note.replace(',', ';')[:300]
+        return pd.DataFrame([[peptide, np.inf, np.inf, np.inf, np.nan, np.nan, np.nan, np.nan, note]],
+                            columns=FOM_COLUMNS)
 
     def init_output():
         # (re)create the output file with just the header row
@@ -898,10 +928,10 @@ def main():
         for peptide, subset in tqdm(jobs):
             try:
                 result_df = process_peptide(*job_args(peptide, subset))
-            except Exception:
-                sys.stderr.write('ERROR processing peptide %s:\n' % peptide)
+            except Exception as exc:
+                sys.stderr.write('ERROR processing peptide %s (recorded as note):\n' % peptide)
                 traceback.print_exc()
-                continue
+                result_df = note_row(peptide, exc)
             append_row(result_df)
 
     def run_parallel():
@@ -918,10 +948,10 @@ def main():
                     result_df = future.result()
                 except BrokenProcessPool:
                     raise  # a worker crashed; bail out so we can retry serially
-                except Exception:
-                    sys.stderr.write('ERROR processing peptide %s:\n' % peptide)
+                except Exception as exc:
+                    sys.stderr.write('ERROR processing peptide %s (recorded as note):\n' % peptide)
                     traceback.print_exc()
-                    continue
+                    result_df = note_row(peptide, exc)
                 append_row(result_df)
 
     # and awwaayyyyy we go~
