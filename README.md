@@ -14,24 +14,45 @@ determine a mean and standard deviation for quantities above the LOD,
 which are then used to calculate a coefficient of variation and
 therefore an LOQ.
 
+By default (`--model auto`) the fit also tests, per peptide, whether the top
+of the curve bends over into a high-signal saturation plateau. When it does,
+a trilinear (noise + linear + saturation) model is selected by AIC and an
+upper limit of quantitation (ULOQ) is reported in addition to the LOD and
+LOQ; curves that stay linear at the top are fit with the bilinear
+(noise + linear) model and have no ULOQ.
+
 
 **INPUT REQUIREMENTS.**
 
-- `curve_data` – either the Encyclopedia `*.elib.peptides.txt` file or a
-Skyline `\*.csv` custom export with peptides as rows, concentration
-points as columns, and areas as values
+- `curve_data` – a quantitative report from any of the supported search
+engines. The filetype is auto-detected from the header:
+  - EncyclopeDIA `*.elib.peptides.txt` (peptides as rows, runs as columns)
+  - Skyline `*.csv` custom export (must include `Peptide Sequence`,
+  `File Name`, and `Total Area Fragment`)
+  - DIA-NN `diann_report.tsv` (recommended DIA-NN input)
+  - DIA-NN `*.pr_matrix.tsv` (supported, but the tool will warn and
+  recommend `diann_report.tsv` instead)
+  - Spectronaut export (with `PEP.StrippedSequence`)
 
-- `filename_concentration_map` - a csv containing each filename as a row
-with its corresponding concentration point in a second column.
+- `filename_concentration_map` - a csv with two columns named `filename`
+and `concentration`, one row per run, mapping each filename to the
+concentration point it represents. Rows with a blank/unannotated
+`concentration` are skipped with a warning that lists the affected
+filenames.
 
 
 **OUTPUT.**
 
-The program writes files to the folder curvefits-output by default.
-The following files will be created:
+The program writes files to the current working directory by default (use
+`--output_path` to change this). The following files will be created:
 
-- `figures_of_merit.csv` – a file containing the peptides in one column
-and their calculated LOQ in another.
+- `figuresofmerit.csv` – one row per peptide with columns `peptide`, `LOD`,
+`LOQ`, `ULOQ`, `slope_linear`, `intercept_linear`, `intercept_noise`,
+`stndev_noise`, and `notes`. `ULOQ` is non-finite for peptides fit with the
+bilinear model (no saturation). Rows are written incrementally as each peptide
+finishes, so partial results survive an interrupted run. A peptide whose fit
+fails is never dropped: it still gets a row with non-finite figures of merit
+and the error message recorded in the `notes` column.
 
 - `*.png` – (optional) plots of each peptide calibration curve with the
 fitted piecewise linear regression.
@@ -52,6 +73,27 @@ e.g. 20% CV threshold should be input as 0.2)'
 integer, e.g. to resample the data 100 times, the parameter value
 should be input as 100'
 
+- `--min_noise_points`, default=2, type=int,
+'the minimum number of curve points required below the LOD for a fit to
+be considered valid'
+
+- `--min_linear_points`, default=1, type=int,
+'the minimum number of curve points required above the LOD for a fit to
+be considered valid'
+
+- `--min_saturation_points`, default=2, type=int,
+'minimum curve points in the high-signal saturation plateau required for the
+`auto` model to adopt a trilinear (noise + linear + saturation) fit and report
+a ULOQ; raise to be more conservative about calling saturation'
+
+- `--model`, default=`auto`, choices=[`auto`, `piecewise`, `bilinear`, `trilinear`],
+'which curve model to fit: `auto` (default) picks bilinear (noise + linear)
+vs trilinear (noise + linear + saturation) per peptide by AIC, adding a
+saturation ceiling / ULOQ only when the top of the curve bends over;
+`piecewise` is the original legacy-init bilinear fit; `bilinear` forces the
+improved-init noise+linear fit; `trilinear` forces the noise+linear+saturation
+fit'
+
 - `--multiplier_file`, type=str,
 'use a single-point multiplier associated with the curve data peptides'
 
@@ -65,11 +107,30 @@ peptide'
 - `--verbose`, default='n', type=str,
 'output a detailed summary of the bootstrapping step'
 
+- `--n_threads`, default=`cpu_count - 2`, type=int,
+'number of worker processes for parallel peptide processing. Set to `-1`
+to use all CPUs, or `1` to run serially in-process (see PARALLELISM below)'
+
+
+**PARALLELISM.**
+
+Peptides are fit in parallel across worker processes. Results are
+deterministic and independent of the number of workers: each bootstrap
+replicate is seeded from its own `SeedSequence`, so a run with `--n_threads 1`
+produces output identical to a parallel run.
+
+If a worker process is terminated abruptly (e.g. out-of-memory, or a native
+crash in numpy/scipy/lmfit/matplotlib), the tool prints a warning and
+automatically falls back to serial processing so the run still completes and
+the underlying error is shown. To debug such a crash directly, rerun with
+`--n_threads 1`, which skips the process pool and reports the failing peptide
+with a full traceback.
+
 
 **EXAMPLE.**
 
 ```python
-python bin\calculate-loq.py data\one_protein.csv data\filename2concentration.csv --multiplier_file data\multiplier_file.csv
+python bin\calculate-loq.py data\one_protein.csv data\filename2samplegroup_map.csv --multiplier_file data\multiplier_file.csv
 ```
 
 **DOCKER.**
