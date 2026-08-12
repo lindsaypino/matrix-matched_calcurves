@@ -10,8 +10,14 @@ Regression tests for specific reported issues in calculate-loq.py.
 
 - Issue #12: warn when the filename/concentration map is blank or has
   unannotated rows.
+
+- Issue #15: DIA-NN's report.tsv is long format and only carries a row where the
+  precursor was identified, so read_input returned a ragged curve -- the runs a
+  peptide dropped out of were absent rather than zero. read_input now completes
+  the peptide x run grid, and figuresofmerit.csv reports the distinct level count.
 """
 
+import importlib
 import os
 import subprocess
 import sys
@@ -19,6 +25,8 @@ import sys
 import numpy as np
 import pandas as pd
 import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "bin"))
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
@@ -95,3 +103,120 @@ def test_empty_map_warns(tmp_path):
 
     proc = _run({"conc_map": str(map_path)}, tmp_path)
     assert "blank" in proc.stderr.lower() or "missing" in proc.stderr.lower()
+
+
+# --- Issue #15: long-format DIA-NN report.tsv is not dense --------------------
+LEVELS = [1, 0.7, 0.5, 0.3, 0.1, 0.07, 0.05, 0.03, 0.01, 0.007, 0.005, 0.003, 0.001, 0]
+REPS = 3
+SATURATING = "SATURATINGPEPTIDEK2"   # saturates at the top, drops out at the bottom
+COMPLETE = "COMPLETEPEPTIDEK2"       # identified in every run
+
+
+def _write_diann_report(report_path, map_path, id_floor=0.07, ceiling=3.0e5,
+                        slope=1.0e6, seed=0):
+    """Write a synthetic long-format diann_report.tsv plus its concentration map.
+
+    SATURATING is only reported at/above `id_floor` -- exactly the DIA-NN behaviour
+    that makes the curve ragged. COMPLETE is reported everywhere.
+    """
+    rng = np.random.default_rng(seed)
+    rows, maprows = [], []
+    for level in LEVELS:
+        for rep in range(1, REPS + 1):
+            fname = f"run_{level}_{rep}.mzML"
+            maprows.append({"filename": fname, "concentration": level})
+            for peptide, saturates in ((SATURATING, True), (COMPLETE, False)):
+                area = slope * level + rng.normal(0, 2.0e3)
+                if saturates:
+                    area = min(area, ceiling + rng.normal(0, 2.0e3))
+                    if level < id_floor:
+                        continue  # not identified -> DIA-NN emits no row at all
+                rows.append({"File.Name": fname,
+                             "Precursor.Id": peptide,
+                             "Stripped.Sequence": peptide[:-1],
+                             "Precursor.Quantity": max(area, 0.0)})
+
+    pd.DataFrame(rows).to_csv(report_path, sep="\t", index=False)
+    pd.DataFrame(maprows).to_csv(map_path, index=False)
+    return len(maprows)
+
+
+@pytest.fixture
+def calc():
+    return importlib.import_module("calculate-loq")
+
+
+def test_diann_report_is_densified(tmp_path, calc):
+    """Every peptide spans every mapped run; unidentified runs read as area 0."""
+    report = tmp_path / "diann_report.tsv"
+    conc_map = tmp_path / "conc_map.csv"
+    n_runs = _write_diann_report(report, conc_map)
+
+    df = calc.read_input(str(report), str(conc_map))
+
+    for peptide in (SATURATING, COMPLETE):
+        sub = df[df["peptide"] == peptide]
+        assert len(sub) == n_runs, f"{peptide}: {len(sub)} rows, expected {n_runs}"
+        assert sub["curvepoint"].nunique() == len(LEVELS)
+
+    # the dropped-out low-concentration runs come back as zeros, not as gaps
+    dropped = df[(df["peptide"] == SATURATING) & (df["curvepoint"] < 0.07)]
+    assert not dropped.empty
+    assert (dropped["area"] == 0).all()
+
+    # ...and the peptide that was identified everywhere keeps its real areas
+    # (0.01 rather than the bottom level, where simulated noise can legitimately
+    # clamp a reported area to 0 and make the check ambiguous)
+    low = df[(df["peptide"] == COMPLETE) & (df["curvepoint"] == 0.01)]
+    assert (low["area"] > 0).all()
+
+
+def test_densified_report_recovers_uloq(tmp_path, calc):
+    """With the grid completed, the saturating peptide gets a finite LOD and ULOQ.
+
+    Read ragged (as the reader used to), the same curve has too few distinct
+    levels for the 'auto' model to keep a saturation segment, so ULOQ is inf.
+    """
+    report = tmp_path / "diann_report.tsv"
+    conc_map = tmp_path / "conc_map.csv"
+    _write_diann_report(report, conc_map)
+
+    df = calc.read_input(str(report), str(conc_map))
+    sub = df[df["peptide"] == SATURATING].sort_values("curvepoint")
+
+    def fit(frame):
+        x = np.asarray(frame["curvepoint"], dtype=float)
+        y = np.asarray(frame["area"], dtype=float)
+        result, _ = calc.fit_by_lmfit_yang(x, y, "auto", min_saturation_points=3)
+        slope = result.params["a"].value
+        intercept = result.params["b"].value
+        c_high = result.params["c_high"].value
+        lod = calc.calculate_lod(
+            np.asarray([0.0, result.params["c"].value, slope, intercept]),
+            frame, 2.0, 2, 3, x, "auto")[0]
+        uloq = calc.calculate_uloq(slope, intercept, c_high, frame, 2.0, 3)
+        return lod, uloq
+
+    lod, uloq = fit(sub)
+    assert np.isfinite(uloq), "densified curve should still resolve a ULOQ"
+    assert np.isfinite(lod), "densified curve should still resolve an LOD"
+
+    # the ragged view of the very same data resolves neither
+    ragged = sub[sub["area"] > 0]
+    ragged_lod, ragged_uloq = fit(ragged)
+    assert np.isinf(ragged_uloq)
+    assert np.isinf(ragged_lod)
+
+
+def test_figuresofmerit_reports_level_count(tmp_path):
+    """figuresofmerit.csv carries n_curvepoints so 'no saturation' is separable
+    from 'too few levels to look for one'."""
+    out = tmp_path / "out"
+    out.mkdir()
+    proc = _run({"extra": ["--n_threads", "1"]}, out)
+    assert proc.returncode == 0, proc.stderr
+
+    fom = pd.read_csv(os.path.join(str(out), "figuresofmerit.csv"))
+    assert "n_curvepoints" in fom.columns
+    # the sample dataset is a dense 14-point curve for every peptide
+    assert (fom["n_curvepoints"] == 14).all()

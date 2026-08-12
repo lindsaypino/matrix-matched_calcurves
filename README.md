@@ -29,7 +29,11 @@ engines. The filetype is auto-detected from the header:
   - EncyclopeDIA `*.elib.peptides.txt` (peptides as rows, runs as columns)
   - Skyline `*.csv` custom export (must include `Peptide Sequence`,
   `File Name`, and `Total Area Fragment`)
-  - DIA-NN `diann_report.tsv` (recommended DIA-NN input)
+  - DIA-NN `diann_report.tsv` (recommended DIA-NN input). This report is long
+  format and carries a row only where a precursor was identified, so the runs a
+  peptide dropped out of are filled in as zero areas — matching the dense
+  matrices the other readers produce, and keeping the noise plateau the LOD is
+  fit from.
   - DIA-NN `*.pr_matrix.tsv` (supported, but the tool will warn and
   recommend `diann_report.tsv` instead)
   - Spectronaut export (with `PEP.StrippedSequence`)
@@ -48,8 +52,11 @@ The program writes files to the current working directory by default (use
 
 - `figuresofmerit.csv` – one row per peptide with columns `peptide`, `LOD`,
 `LOQ`, `ULOQ`, `slope_linear`, `intercept_linear`, `intercept_noise`,
-`stndev_noise`, and `notes`. `ULOQ` is non-finite for peptides fit with the
-bilinear model (no saturation). Rows are written incrementally as each peptide
+`stndev_noise`, `n_curvepoints`, and `notes`. `ULOQ` is non-finite for peptides
+fit with the bilinear model (no saturation); `n_curvepoints` is the number of
+distinct concentration levels the peptide was fit over, which separates a
+genuine "no saturation" result from a curve that had too few levels for the
+`auto` model to look for one. Rows are written incrementally as each peptide
 finishes, so partial results survive an interrupted run. A peptide whose fit
 fails is never dropped: it still gets a row with non-finite figures of merit
 and the error message recorded in the `notes` column.

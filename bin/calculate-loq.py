@@ -65,6 +65,39 @@ def _validate_conc_map(col_conc_map_file):
             sys.stderr.write(f'  {fname}\n')
 
 
+def _complete_grid(df_long, peptide_col='peptide', run_col='filename', value_col='area'):
+    """Complete a long-format report into a dense peptide x run grid, filling the
+    unobserved cells with 0 (issue #15).
+
+    The wide-format readers (EncyclopeDIA, DIA-NN pr_matrix, Spectronaut) start from
+    a matrix, so every peptide x run cell already exists and the blanks become 0 at
+    the bottom of read_input. DIA-NN's report.tsv is long format and carries a row
+    only where the precursor was identified, so a peptide that drops out of the
+    low-concentration runs has no rows there at all rather than zeros. That erases
+    the noise plateau the LOD is fit from, and shrinks the distinct-curve-point
+    count the 'auto' model uses to decide whether a saturation segment -- and hence
+    a ULOQ -- is supported.
+
+    Only runs that actually appear in df_long are used as grid columns: a run
+    missing from the report entirely was never measured (or never searched), and
+    inventing an all-zero column for it would fabricate data rather than restore it.
+    """
+    peptides = df_long[peptide_col].unique()
+    runs = df_long[run_col].unique()
+    grid = pd.MultiIndex.from_product([peptides, runs], names=[peptide_col, run_col])
+
+    areas = df_long.set_index([peptide_col, run_col])[value_col]
+    if areas.index.has_duplicates:
+        # one row per precursor per run is expected; if the report carries more
+        # (e.g. several reports concatenated), sum them rather than fail the reindex
+        n_dup = int(areas.index.duplicated().sum())
+        sys.stderr.write('WARNING: %d duplicate peptide/run row(s) in the report; '
+                         'their areas will be summed.\n' % n_dup)
+        areas = areas.groupby(level=[peptide_col, run_col]).sum()
+
+    return areas.reindex(grid, fill_value=0).reset_index()
+
+
 def read_input(filename, col_conc_map_file):
     _validate_conc_map(col_conc_map_file)
 
@@ -167,9 +200,22 @@ def read_input(filename, col_conc_map_file):
                     'Precursor.Id': 'peptide',
                     'Precursor.Quantity': 'area'}, inplace=True)
 
-        # Map filenames to concentrations - using merge instead of rename
+        # Map filenames to concentrations - using merge instead of rename. Only
+        # annotated rows can define a curve point, so drop blank/unparseable
+        # concentrations here (they are already warned about); leaving them in would
+        # let the grid completion below manufacture zeros at an unmapped curve point.
         col_conc_map = pd.read_csv(col_conc_map_file)
-        df = pd.merge(df, col_conc_map[['filename', 'concentration']], on='filename', how='inner')
+        col_conc_map = col_conc_map[['filename', 'concentration']].drop_duplicates('filename')
+        col_conc_map = col_conc_map[pd.to_numeric(col_conc_map['concentration'],
+                                                  errors='coerce').notna()]
+        df = pd.merge(df, col_conc_map, on='filename', how='inner')
+
+        # This report is long format: a row exists only where the precursor was
+        # identified, so the runs it dropped out of are absent rather than zero.
+        # Complete the peptide x run grid the way the wide-format readers already
+        # do, then re-attach the concentrations (issue #15).
+        df = _complete_grid(df)
+        df = pd.merge(df, col_conc_map, on='filename', how='left')
 
         # Create melted dataframe preserving all values
         df_melted = pd.DataFrame({
@@ -710,8 +756,12 @@ def build_plots(peptide, x, y, model_results, boot_results, num_bootreps, std_mu
     plt.close()
 
 
+# 'n_curvepoints' is the number of distinct concentration levels the peptide was
+# actually fit over. It separates the two reasons a ULOQ can come back non-finite:
+# the curve had plenty of levels and simply never bent over (no saturation), or it
+# had too few levels for the 'auto' model to justify a saturation segment at all.
 FOM_COLUMNS = ['peptide', 'LOD', 'LOQ', 'ULOQ', 'slope_linear', 'intercept_linear',
-               'intercept_noise', 'stndev_noise', 'notes']
+               'intercept_noise', 'stndev_noise', 'n_curvepoints', 'notes']
 
 
 def process_peptide(*args):
@@ -726,7 +776,14 @@ def process_peptide(*args):
         note = ('%s: %s' % (type(exc).__name__, exc)).replace('\n', ' ').replace('\r', ' ')
         note = note.replace(',', ';')[:300]  # keep the CSV row single-field and one line
         sys.stderr.write('WARNING: peptide %s failed to fit; recorded with note: %s\n' % (peptide, note))
-        row = [peptide, np.inf, np.inf, np.inf, np.nan, np.nan, np.nan, np.nan, note]
+        # the level count describes the input, not the fit, so it is most useful
+        # precisely on the rows where the fit failed; args[9] is subset
+        try:
+            n_curvepoints = int(args[9]['curvepoint'].nunique())
+        except Exception:
+            n_curvepoints = np.nan
+        row = [peptide, np.inf, np.inf, np.inf, np.nan, np.nan, np.nan, np.nan,
+               n_curvepoints, note]
         return pd.DataFrame([row], columns=FOM_COLUMNS)
 
 
@@ -804,7 +861,8 @@ def _process_peptide_core(bootreps, cv_thresh, output_dir, peptide, plot_or_not,
             sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
 
     # make a dataframe row with the peptide and its figures of merit ('' note = fit OK)
-    new_row = [peptide, LOD, LOQ, ULOQ, slope_linear, intercept_linear, intercept_noise, std_noise, '']
+    new_row = [peptide, LOD, LOQ, ULOQ, slope_linear, intercept_linear, intercept_noise, std_noise,
+               len(np.unique(x)), '']
     new_df_row = pd.DataFrame([new_row], columns=FOM_COLUMNS)
 
     return new_df_row
@@ -904,7 +962,10 @@ def main():
         # never drop a peptide: emit a row with non-finite FOMs and the error note
         note = ('%s: %s' % (type(exc).__name__, exc)).replace('\n', ' ').replace('\r', ' ')
         note = note.replace(',', ';')[:300]
-        return pd.DataFrame([[peptide, np.inf, np.inf, np.inf, np.nan, np.nan, np.nan, np.nan, note]],
+        # n_curvepoints is left blank here: this path handles a worker that died
+        # without returning, so the peptide's data is not in hand to count levels
+        return pd.DataFrame([[peptide, np.inf, np.inf, np.inf, np.nan, np.nan, np.nan, np.nan,
+                              np.nan, note]],
                             columns=FOM_COLUMNS)
 
     def init_output():
