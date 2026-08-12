@@ -15,6 +15,18 @@ Regression tests for specific reported issues in calculate-loq.py.
   precursor was identified, so read_input returned a ragged curve -- the runs a
   peptide dropped out of were absent rather than zero. read_input now completes
   the peptide x run grid, and figuresofmerit.csv reports the distinct level count.
+
+- Issue #16: the bootstrap resamples by row position, so the LOQ depended on
+  whatever order the reader emitted rows in. Every input is now normalized to a
+  dense grid in canonical (curvepoint, area) order.
+
+- --model piecewise discarded its own LOD edge cases, returning the raw LOD where
+  the 2021 original returns the edge-case-corrected result. It exists to reproduce
+  the legacy model, so the overrides are honored again.
+
+- associate_multiplier inner-joined on peptide, so any peptide absent from
+  --multiplier_file vanished from the output entirely. Peptides are kept now, with
+  a note explaining the missing multiplier.
 """
 
 import importlib
@@ -248,6 +260,67 @@ def test_figures_of_merit_are_row_order_independent(calc):
             assert np.isclose(got[col], reference[col], rtol=1e-12, equal_nan=True), (
                 f"{col} changed with row order: {reference[col]} -> {got[col]}"
             )
+
+
+# --- piecewise must reproduce the 2021 legacy model, edge cases included --------
+def test_piecewise_lod_honors_edge_cases(calc):
+    """--model piecewise returns inf when the LOD lands above the top curve point.
+
+    The 2021 original (calculate-loq_2021diann.py) returns its edge-case-corrected
+    lod_results; the port returned the raw LOD and silently dropped both overrides,
+    making 'piecewise' less faithful than the legacy model it exists to reproduce.
+    """
+    df = pd.DataFrame({
+        "peptide": ["P"] * 8,
+        "curvepoint": [0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0],
+        "area": [10.0, 12.0, 100.0, 110.0, 200.0, 210.0, 300.0, 310.0],
+    })
+    x = df["curvepoint"].to_numpy(dtype=float)
+
+    # noise intercept far above the linear segment -> LOD lands way beyond max(x)
+    model_params = np.asarray([0.0, 1.0e6, 1.0, 0.0])
+    lod, std_noise = calc.calculate_lod(model_params, df, 2.0, 2, 1, x, "piecewise")
+
+    assert lod > max(x) or np.isinf(lod)
+    assert np.isinf(lod), "LOD above the top curve point must be reported as inf"
+    assert np.isinf(std_noise)
+
+
+# --- a peptide with no multiplier must survive, not vanish ----------------------
+def test_missing_multiplier_keeps_the_peptide(tmp_path):
+    """Peptides absent from --multiplier_file are kept with an explanatory note.
+
+    associate_multiplier used an inner join, so those peptides never reached
+    figuresofmerit.csv at all -- no row, no note, just a smaller peptide count.
+    """
+    full = pd.read_csv(os.path.join(REPO, "data", "multiplier_file.csv"))
+    curve = pd.read_csv(CURVE_DATA)
+    dropped = ["TLANTAVVIR", "VVEILQNR"]
+    keep = set(curve["Peptide"]) - set(dropped)
+
+    partial = tmp_path / "multiplier_partial.csv"
+    full[full["peptide"].isin(keep)].to_csv(partial, index=False)
+
+    out = tmp_path / "out"
+    out.mkdir()
+    proc = _run({"extra": ["--n_threads", "1", "--bootreps", "20",
+                           "--multiplier_file", str(partial)]}, out)
+    assert proc.returncode == 0, proc.stderr
+
+    assert "no multiplier provided for 2 peptide(s)" in proc.stderr
+    for peptide in dropped:
+        assert peptide in proc.stderr
+
+    fom = pd.read_csv(os.path.join(str(out), "figuresofmerit.csv"))
+    assert len(fom) == curve["Peptide"].nunique(), "a peptide was dropped from output"
+    for peptide in dropped:
+        row = fom[fom["peptide"] == peptide]
+        assert len(row) == 1, f"{peptide} missing from figuresofmerit.csv"
+        assert not np.isfinite(row.iloc[0]["LOD"])
+        assert "multiplier" in str(row.iloc[0]["notes"]), (
+            f"{peptide} note should explain the missing multiplier, got: "
+            f"{row.iloc[0]['notes']}"
+        )
 
 
 def test_figuresofmerit_reports_level_count(tmp_path):

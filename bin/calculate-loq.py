@@ -258,8 +258,23 @@ def read_input(filename, col_conc_map_file):
 def associate_multiplier(df, multiplier_file):
     mutliplier_df = pd.read_csv(multiplier_file)
 
-    # merge the multiplier with the data frame
-    merged_df = pd.merge(df, mutliplier_df, on='peptide', how='inner')
+    # merge the multiplier with the data frame. Left join, not inner: an inner join
+    # silently deleted every peptide absent from the multiplier file, so it never
+    # reached figuresofmerit.csv at all -- no row, no note, just a quietly smaller
+    # peptide count. Peptides with no multiplier are kept, their curve points go to
+    # NaN (they cannot be scaled), and the fit records them as noted rows.
+    merged_df = pd.merge(df, mutliplier_df, on='peptide', how='left')
+
+    unmatched = sorted(merged_df.loc[merged_df['multiplier'].isna(), 'peptide'].unique())
+    if unmatched:
+        sys.stderr.write(
+            'WARNING: no multiplier provided for %d peptide(s); their curve points '
+            'cannot be scaled and their figures of merit will be non-finite:\n'
+            % len(unmatched)
+        )
+        for peptide in unmatched:
+            sys.stderr.write('  %s\n' % peptide)
+
     merged_df['curvepoint_multiplied'] = merged_df['curvepoint'] * merged_df['multiplier']
     multiplied_df = merged_df[['peptide', 'curvepoint_multiplied', 'area']]
     multiplied_df.columns = ['peptide', 'curvepoint', 'area']
@@ -439,7 +454,11 @@ def calculate_lod(model_params, df, std_mult, min_noise_points, min_linear_point
     
     if model == 'piecewise':
 
-        # calculate the standard deviation for the noise segment
+        # calculate the standard deviation for the noise segment.
+        # No divide-by-zero guard here on purpose: the 2021 original has none
+        # (calculate-loq_2021diann.py), and 'piecewise' exists to reproduce it. A
+        # degenerate fit gives an infinite intersection and the edge cases below
+        # catch it, exactly as the legacy code did.
         intersection = (b_linear-b_noise) / (m_noise-m_linear)
         std_noise = np.std(df['area'].loc[(df['curvepoint'].astype(float) < intersection)], ddof=1)  # sample std (Bessel-corrected)
 
@@ -458,7 +477,11 @@ def calculate_lod(model_params, df, std_mult, min_noise_points, min_linear_point
         elif LOD < float(min(curve_points)):  # if there's not at least two points below the LOD
             lod_results = [float('Inf'), float('Inf')]
 
-        return LOD, std_noise
+        # return lod_results, not (LOD, std_noise): the 2021 original returns the
+        # edge-case-corrected list, so returning the raw LOD here silently dropped
+        # both overrides above and made 'piecewise' *less* faithful to the legacy
+        # model it exists to reproduce.
+        return lod_results
 
     # calculate the standard deviation for the noise segment
     if (m_noise - m_linear) == 0:
@@ -773,6 +796,14 @@ def process_peptide(*args):
 
 
 def _process_peptide_core(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, min_saturation_points, subset, verbose, model_choice):
+    # A peptide with no usable curve points cannot be fit at all. The common cause is
+    # --multiplier_file carrying no multiplier for it, which sends its curve points to
+    # NaN (see associate_multiplier). Say that in the notes column rather than letting
+    # lmfit fail later with an opaque LinAlgError.
+    if not np.isfinite(np.asarray(subset['curvepoint'], dtype=float)).any():
+        raise ValueError('no usable curve points (all NaN); if --multiplier_file was '
+                         'used this peptide had no multiplier')
+
     # sort the dataframe with x values in strictly ascending order. Sort on the same
     # canonical keys read_input used: this is the order the bootstrap resamples by
     # position, so a plain curvepoint sort (non-stable, ties on replicates) would
