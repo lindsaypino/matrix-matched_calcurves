@@ -29,14 +29,26 @@ engines. The filetype is auto-detected from the header:
   - EncyclopeDIA `*.elib.peptides.txt` (peptides as rows, runs as columns)
   - Skyline `*.csv` custom export (must include `Peptide Sequence`,
   `File Name`, and `Total Area Fragment`)
-  - DIA-NN `diann_report.tsv` (recommended DIA-NN input). This report is long
-  format and carries a row only where a precursor was identified, so the runs a
-  peptide dropped out of are filled in as zero areas — matching the dense
-  matrices the other readers produce, and keeping the noise plateau the LOD is
-  fit from.
+  - DIA-NN `diann_report.tsv` (recommended DIA-NN input)
   - DIA-NN `*.pr_matrix.tsv` (supported, but the tool will warn and
   recommend `diann_report.tsv` instead)
   - Spectronaut export (with `PEP.StrippedSequence`)
+
+  Every format is normalized identically once it has been read, so the same
+  experiment gives the same answer whichever report it came from:
+
+  - **Dense.** Each peptide spans every measured run. Long-format reports (DIA-NN
+  `diann_report.tsv`, and Skyline exports that omit undetected peptides) carry a
+  row only where the peptide was identified; the runs it dropped out of are filled
+  in as zero areas, which is what the wide-format matrices already contain. This
+  keeps the noise plateau the LOD is fit from.
+  - **Canonically ordered.** Rows are sorted by `(curvepoint, area)`. The
+  bootstrap resamples by row position, so without a canonical order the LOQ
+  depended on whatever order the reader happened to emit — by up to 240% on the
+  sample dataset. Sorting on `curvepoint` alone is not enough, because replicates
+  tie on it.
+  - Only runs listed in the concentration map are kept, and a run absent from the
+  report entirely is never invented as an all-zero column.
 
 - `filename_concentration_map` - a csv with two columns named `filename`
 and `concentration`, one row per run, mapping each filename to the

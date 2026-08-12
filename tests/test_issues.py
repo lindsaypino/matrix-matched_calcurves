@@ -208,6 +208,48 @@ def test_densified_report_recovers_uloq(tmp_path, calc):
     assert np.isinf(ragged_lod)
 
 
+# --- Issue #16: every input normalized alike; bootstrap must not depend on order --
+def test_reader_output_is_canonically_sorted(calc, tmp_path):
+    """read_input returns rows in canonical (peptide, curvepoint, area) order."""
+    report = tmp_path / "diann_report.tsv"
+    conc_map = tmp_path / "conc_map.csv"
+    _write_diann_report(report, conc_map)
+
+    df = calc.read_input(str(report), str(conc_map))
+    expected = df.sort_values(["peptide"] + calc.SORT_KEYS, kind="mergesort")
+    assert df.equals(expected.reset_index(drop=True))
+
+
+def test_figures_of_merit_are_row_order_independent(calc):
+    """Shuffling a peptide's rows must not change any figure of merit.
+
+    The bootstrap resamples by position (df.sample draws positional indices), so
+    before the canonical sort a permuted frame produced a different resample and
+    moved the LOQ -- by up to 240% on this dataset.
+    """
+    df = calc.read_input(CURVE_DATA, CONC_MAP)
+    rng = np.random.default_rng(0)
+
+    # a peptide whose LOQ was among the least stable under permutation
+    peptide = "GEGFMVVTATGDNTFVGR"
+    base = df[df["peptide"] == peptide]
+    assert not base.empty, f"{peptide} missing from the sample dataset"
+
+    def figures(subset):
+        row = calc.process_peptide(50, 0.2, None, peptide, "n", 2.0, 2, 1, 2,
+                                   subset, "n", "auto")
+        return row.iloc[0]
+
+    reference = figures(base)
+    for _ in range(3):
+        shuffled = base.iloc[rng.permutation(len(base))]
+        got = figures(shuffled)
+        for col in ("LOD", "LOQ", "ULOQ", "slope_linear", "intercept_linear"):
+            assert np.isclose(got[col], reference[col], rtol=1e-12, equal_nan=True), (
+                f"{col} changed with row order: {reference[col]} -> {got[col]}"
+            )
+
+
 def test_figuresofmerit_reports_level_count(tmp_path):
     """figuresofmerit.csv carries n_curvepoints so 'no saturation' is separable
     from 'too few levels to look for one'."""

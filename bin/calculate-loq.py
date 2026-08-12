@@ -65,18 +65,25 @@ def _validate_conc_map(col_conc_map_file):
             sys.stderr.write(f'  {fname}\n')
 
 
+def _read_conc_map(col_conc_map_file):
+    """Read the filename->concentration map down to the rows that can define a curve
+    point: one row per filename, blank/unparseable concentrations dropped (they are
+    warned about by _validate_conc_map, and the README documents them as skipped)."""
+    col_conc_map = pd.read_csv(col_conc_map_file)
+    col_conc_map = col_conc_map[['filename', 'concentration']].drop_duplicates('filename')
+    return col_conc_map[pd.to_numeric(col_conc_map['concentration'], errors='coerce').notna()]
+
+
 def _complete_grid(df_long, peptide_col='peptide', run_col='filename', value_col='area'):
     """Complete a long-format report into a dense peptide x run grid, filling the
     unobserved cells with 0 (issue #15).
 
-    The wide-format readers (EncyclopeDIA, DIA-NN pr_matrix, Spectronaut) start from
-    a matrix, so every peptide x run cell already exists and the blanks become 0 at
-    the bottom of read_input. DIA-NN's report.tsv is long format and carries a row
-    only where the precursor was identified, so a peptide that drops out of the
-    low-concentration runs has no rows there at all rather than zeros. That erases
-    the noise plateau the LOD is fit from, and shrinks the distinct-curve-point
-    count the 'auto' model uses to decide whether a saturation segment -- and hence
-    a ULOQ -- is supported.
+    A wide-format report starts from a matrix, so every peptide x run cell already
+    exists. DIA-NN's report.tsv is long format and carries a row only where the
+    precursor was identified, so a peptide that drops out of the low-concentration
+    runs has no rows there at all rather than zeros. That erases the noise plateau
+    the LOD is fit from, and shrinks the distinct-curve-point count the 'auto' model
+    uses to decide whether a saturation segment -- and hence a ULOQ -- is supported.
 
     Only runs that actually appear in df_long are used as grid columns: a run
     missing from the report entirely was never measured (or never searched), and
@@ -98,11 +105,57 @@ def _complete_grid(df_long, peptide_col='peptide', run_col='filename', value_col
     return areas.reindex(grid, fill_value=0).reset_index()
 
 
+# Canonical row order. Sorting on curvepoint alone is not enough: replicates tie on
+# it, and sort_values defaults to a non-stable quicksort, so tie order is whatever
+# the reader happened to emit. That matters because _bootstrap_once resamples by
+# *position* (df.sample draws positional indices), so a permuted frame under the
+# same seed selects entirely different rows and moves the LOQ -- by up to 240% on
+# the sample dataset. Adding 'area' gives a total order up to value-equality: rows
+# tying on both keys are identical in value and therefore interchangeable, so the
+# resample is the same either way.
+SORT_KEYS = ['curvepoint', 'area']
+
+
+def _normalize_input(df_long, col_conc_map):
+    """Bring every reader's output to one shape, so no input format can drift from
+    another: rows restricted to mapped runs, a dense peptide x run grid with
+    unobserved cells zeroed, curve points attached, and a canonical row order.
+
+    Returns the melted dataframe the rest of the tool expects: peptide, curvepoint,
+    area.
+    """
+    # drop anything the map doesn't annotate; only mapped runs define a curve point
+    df_long = df_long[df_long['filename'].isin(col_conc_map['filename'])]
+
+    # every peptide spans every measured run, missing cells read as zero
+    df_long = _complete_grid(df_long)
+
+    df = pd.merge(df_long, col_conc_map, on='filename', how='left')
+    df_melted = pd.DataFrame({
+        'peptide': df['peptide'],
+        'curvepoint': pd.to_numeric(df['concentration']),
+        'area': df['area'],
+    })
+
+    # replace NaN values with zero
+    # TODO: is this appropriate? it's required for lmfit in any case
+    df_melted = df_melted.fillna({'area': 0})
+
+    return df_melted.sort_values(by=['peptide'] + SORT_KEYS,
+                                 kind='mergesort').reset_index(drop=True)
+
+
 def read_input(filename, col_conc_map_file):
     _validate_conc_map(col_conc_map_file)
 
     with open(filename, 'r') as f:
         header_line = f.readline()
+
+    col_conc_map = _read_conc_map(col_conc_map_file)
+
+    # Each branch below is responsible for one thing only: turning its filetype into
+    # a long frame of peptide / filename / area. Density, curve-point mapping and row
+    # order are handled once, for every format alike, by _normalize_input.
 
     # if numFragments is a column, it's an Encyclopedia file
     if 'numFragments' in header_line:
@@ -110,46 +163,24 @@ def read_input(filename, col_conc_map_file):
 
         df = pd.read_csv(filename, sep=None, engine='python')
         df.drop(['numFragments', 'Protein'], axis="columns", inplace=True)  # make a quantitative df with just curve points and peptides
+        df.rename(columns={'Peptide': 'peptide'}, inplace=True)
 
-        col_conc_map = pd.read_csv(col_conc_map_file, index_col="filename")
-
-        # map filenames to concentrations
-        df.rename(columns=dict(
-            col_conc_map['concentration'],
-            **{'Peptide': 'peptide'}
-        ), inplace=True)
-
-        df_melted = pd.melt(df, id_vars=['peptide'])
-        df_melted.columns = ['peptide', 'curvepoint', 'area']
-        df_melted = df_melted[df_melted['curvepoint'].isin(col_conc_map['concentration'])]
+        df_long = pd.melt(df, id_vars=['peptide'], var_name='filename', value_name='area')
 
     # if Skyline file, require columns for File Name, Total Area Fragment, Peptide Sequence
     # TODO: option for Total Area Ratio?
     elif all(col in header_line for col in ['Total Area Fragment', 'Peptide Sequence', 'File Name']):
         sys.stdout.write('Input assumed to be Skyline export filetype. \n')
 
-        df_melted = pd.read_csv(filename)
-        df_melted.rename(columns={'File Name': 'filename'}, inplace=True)
-        col_conc_map = pd.read_csv(col_conc_map_file)
-
-        # remove any data for which there isn't a map key
-        df_melted = df_melted[df_melted['filename'].isin(col_conc_map['filename'])]
-
-        # map filenames to concentrations
-        df_melted = pd.merge(df_melted, col_conc_map, on='filename', how='outer')
+        df_long = pd.read_csv(filename)
 
         # clean up column names to match downstream convention
-        df_melted.rename(columns={'Total Area Fragment': 'area',
-                                  'Peptide Sequence': 'peptide',
-                                  'concentration': 'curvepoint'}, inplace=True)
+        df_long.rename(columns={'File Name': 'filename',
+                                'Total Area Fragment': 'area',
+                                'Peptide Sequence': 'peptide'}, inplace=True)
+        df_long = df_long[['peptide', 'filename', 'area']]
 
-        # remove points that didn't have a mapping (NA)
-        df_melted['curvepoint'].replace('', np.nan, inplace=True)
-        df_melted.dropna(subset=['curvepoint'], inplace=True)
-
-        df_melted['area'] = df_melted['area'].fillna(0)  # replace NA with 0
-
-    # If dia-nn *.pr_matrix.tsv input file, supply warning about normalizations 
+    # If dia-nn *.pr_matrix.tsv input file, supply warning about normalizations
     # and suggest using diann_report.tsv instead
     elif 'Stripped.Sequence' in header_line and 'Precursor.Quantity' not in header_line:
         sys.stdout.write('Input assumed to be DIA-NN *.pr_matrix.tsv filetype.\n')
@@ -161,7 +192,6 @@ def read_input(filename, col_conc_map_file):
         df['Precursor.Charge'] = df['Precursor.Charge'].astype(str)
         df['Modified.Sequence'] = df['Modified.Sequence'].astype(str)
         df['peptide'] = df['Modified.Sequence'] + "_" + df['Precursor.Charge']
-        #print(df.head())
 
         df = df.drop(['Protein.Group',
             'Modified.Sequence',
@@ -173,72 +203,41 @@ def read_input(filename, col_conc_map_file):
             'Stripped.Sequence',
             'Precursor.Charge',
             'Precursor.Id'], axis=1)  # make a quantitative df with just curve points and peptides
-        col_conc_map = pd.read_csv(col_conc_map_file)
-        df = df.rename(columns=col_conc_map.set_index('filename')['concentration'])  # map filenames to concentrations
 
-        df_melted = pd.melt(df, id_vars=['peptide'])
-        df_melted.columns = ['peptide', 'curvepoint', 'area']
-        df_melted = df_melted[df_melted['curvepoint'].isin(col_conc_map['concentration'])]
+        df_long = pd.melt(df, id_vars=['peptide'], var_name='filename', value_name='area')
 
         # remove colons in Unimod description, e.g. "AAVDC(UniMod:4)EC(UniMod:4)EFQNLEHNEK.png"
-        df_melted['peptide'] = df_melted['peptide'].str.replace(':', '')
-        #print(df_melted.head())
+        df_long['peptide'] = df_long['peptide'].str.replace(':', '')
 
     # If dia-nn diann_report.tsv input file, check for BOTH Stripped.Sequence AND Precursor.Quantity
     # TODO: add filereading for newer DIA-NN version's diann_report parquet filetype??
     elif 'Stripped.Sequence' in header_line and 'Precursor.Quantity' in header_line:
         sys.stdout.write('Input assumed to be DIA-NN diann_report.tsv filetype.\n')
 
-        df = pd.read_table(filename, sep=None, engine='python')
+        df_long = pd.read_table(filename, sep=None, engine='python')
 
         # Drop all other columns in the report
-        columns_to_keep = ['Precursor.Id', 'File.Name', 'Precursor.Quantity']
-        df = df[columns_to_keep]
+        df_long = df_long[['Precursor.Id', 'File.Name', 'Precursor.Quantity']]
 
         # Clean up the column names to match downstream convention
-        df.rename(columns={'File.Name': 'filename',
+        df_long.rename(columns={'File.Name': 'filename',
                     'Precursor.Id': 'peptide',
                     'Precursor.Quantity': 'area'}, inplace=True)
 
-        # Map filenames to concentrations - using merge instead of rename. Only
-        # annotated rows can define a curve point, so drop blank/unparseable
-        # concentrations here (they are already warned about); leaving them in would
-        # let the grid completion below manufacture zeros at an unmapped curve point.
-        col_conc_map = pd.read_csv(col_conc_map_file)
-        col_conc_map = col_conc_map[['filename', 'concentration']].drop_duplicates('filename')
-        col_conc_map = col_conc_map[pd.to_numeric(col_conc_map['concentration'],
-                                                  errors='coerce').notna()]
-        df = pd.merge(df, col_conc_map, on='filename', how='inner')
-
-        # This report is long format: a row exists only where the precursor was
-        # identified, so the runs it dropped out of are absent rather than zero.
-        # Complete the peptide x run grid the way the wide-format readers already
-        # do, then re-attach the concentrations (issue #15).
-        df = _complete_grid(df)
-        df = pd.merge(df, col_conc_map, on='filename', how='left')
-
-        # Create melted dataframe preserving all values
-        df_melted = pd.DataFrame({
-            'peptide': df['peptide'],
-            'curvepoint': df['concentration'],
-            'area': df['area']
-        })
-
         # remove colons in Unimod description, e.g. "AAVDC(UniMod:4)EC(UniMod:4)EFQNLEHNEK.png"
-        df_melted['peptide'] = df_melted['peptide'].str.replace(':', '')
-        #print(df_melted.head())
+        df_long['peptide'] = df_long['peptide'].str.replace(':', '')
 
     # Spectronaut output
     elif "PEP.StrippedSequence" in header_line:
         sys.stdout.write('Input identified as Spectronaut output.\n')
 
         df = pd.read_table(filename, sep=None, engine='python')
-        
+
         # create unique precursor entries so precursors aren't double-counted for curve fitting
         df['Precursor.Charge'] = df['EG.PrecursorId'].str.split(".", expand=True)[1]
         df['Modified.Sequence'] = df['EG.PrecursorId'].str.split(".", expand=True)[0].str.strip("_")
         df['peptide'] = df['Modified.Sequence'] + "_" + df['Precursor.Charge']
-        
+
         df.drop(["PG.ProteinGroups",
                  "PG.Organisms",
                  "PG.ProteinNames",
@@ -246,27 +245,13 @@ def read_input(filename, col_conc_map_file):
                  "PEP.PeptidePosition",
                  "EG.PrecursorId",
                  "EG.ModifiedSequence"], axis="columns", inplace=True)  # make a quantitative df with just curve points and peptides
-        
-        col_conc_map = pd.read_csv(col_conc_map_file)
 
-        df = df.rename(columns=col_conc_map.set_index('filename')['concentration'])  # map filenames to concentrations
-
-        df_melted = pd.melt(df, id_vars=['peptide'])
-        df_melted.columns = ['Peptide', 'curvepoint', 'area']
-        df_melted = df_melted[df_melted['curvepoint'].isin(col_conc_map['concentration'])]
+        df_long = pd.melt(df, id_vars=['peptide'], var_name='filename', value_name='area')
 
         # remove colons in Unimod description, e.g. "AAVDC(UniMod:4)EC(UniMod:4)EFQNLEHNEK.png"
-        df_melted['Peptide'] = df_melted['Peptide'].str.replace(':', '')
+        df_long['peptide'] = df_long['peptide'].str.replace(':', '')
 
-    # convert the curve points to numbers so that they sort correctly
-    df_melted['curvepoint'] = pd.to_numeric(df_melted['curvepoint'])
-
-    # replace NaN values with zero
-    # TODO: is this appropriate? it's required for lmfit in any case
-    # df_melted['area'].fillna(0, inplace=True)  # FutureWarning: this will be deprecated in a future version of pandas
-    df_melted.fillna({'area': 0}, inplace=True)
-
-    return df_melted
+    return _normalize_input(df_long, col_conc_map)
 
 
 # associates a multiplier value to the curvepoint a la single-point calibration
@@ -788,8 +773,11 @@ def process_peptide(*args):
 
 
 def _process_peptide_core(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, min_saturation_points, subset, verbose, model_choice):
-    # sort the dataframe with x values in strictly ascending order
-    subset = subset.sort_values(by='curvepoint', ascending=True)
+    # sort the dataframe with x values in strictly ascending order. Sort on the same
+    # canonical keys read_input used: this is the order the bootstrap resamples by
+    # position, so a plain curvepoint sort (non-stable, ties on replicates) would
+    # re-permute the rows and put the LOQ back at the mercy of reader row order.
+    subset = subset.sort_values(by=SORT_KEYS, ascending=True, kind='mergesort')
 
     # create the x and y arrays
     x = np.array(subset['curvepoint'], dtype=float)
