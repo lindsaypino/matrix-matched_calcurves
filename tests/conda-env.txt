@@ -1,0 +1,13 @@
+# conda-env.txt - python packages required to run the tests
+#
+# This file will not work with `pip`, instead use `conda`:
+#   conda install --file tests/conda-env.txt
+#
+# Deliberately NOT named *requirements*.txt. GitHub's dependency graph collects
+# any .txt whose name contains "requirements" as a pip manifest, then fails on
+# the conda single-'=' pins below with "Invalid requirement: 'pytest=7.1.1'".
+# Renaming it to conda-requirements.txt did not help, because that name still
+# contains the matched substring.
+
+pytest=7.1.1
+pytest-benchmark=3.4.1

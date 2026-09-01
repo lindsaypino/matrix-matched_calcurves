@@ -133,7 +133,7 @@ None of these change any reported figure of merit.
 - **`tests/test_calculate_loq.py::bench_process_nonquant_peptide` is stale.** It calls
   `process_peptide` with 8 positional arguments; the signature has needed 12 since the
   min-points parameters were added, so it would `TypeError`. It is masked because
-  `pytest-benchmark` is declared in `tests/conda-requirements.txt` but not installed in the
+  `pytest-benchmark` is declared in `tests/conda-env.txt` but not installed in the
   local venv, so both benchmark tests error at setup instead of running. That is the
   two errors on every `pytest` run.
 - **No round-trip test for the reader.** Re-expressing `data/one_protein.csv` as a
