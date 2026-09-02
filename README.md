@@ -76,6 +76,35 @@ and the error message recorded in the `notes` column.
 - `*.png` – (optional) plots of each peptide calibration curve with the
 fitted piecewise linear regression.
 
+**FIGURES OF MERIT.**
+
+The three limits below are given at the default settings (`--std_mult 2`,
+`--cv_thresh 0.2`, `--bootreps 100`, `--min_noise_points 2`,
+`--min_linear_points 1`, `--min_saturation_points 2`, `--model auto`). In the
+formulas, `m_lin` and `b_lin` are the slope and the intercept of the linear
+segment, `b_noise` is the noise intercept, `c_high` is the saturation ceiling,
+and `s_noise` / `s_sat` are the sample standard deviations (ddof=1) of the areas
+in the noise segment and in the saturation plateau.
+
+| | LOD | LLOQ (the `LOQ` column) | ULOQ |
+|---|---|---|---|
+| **Definition at the defaults** | The concentration at which the fitted linear segment gets to the noise intercept plus 2 noise standard deviations. | The lowest concentration above the LOD at which the bootstrap CV is less than 0.20 (20%). | The concentration at which the linear segment comes to 2 saturation standard deviations below the saturation ceiling. |
+| **Formula** | `LOD = (b_noise + 2*s_noise - b_lin) / m_lin` | `LLOQ = min{ x : CV(x) < 0.20 }`, where `CV(x) = std/mean` of the 100 bootstrap fits evaluated at `x` | `ULOQ = (c_high - 2*s_sat - b_lin) / m_lin` |
+| **Where it is measured** | The intersection of the noise and linear segments | A 100-point grid from the LOD up to `min(ULOQ, max curvepoint)` | The saturation onset, `(c_high - b_lin) / m_lin`, backed off by the plateau noise |
+| **Data support necessary** | At least 2 distinct curve points below the LOD, and at least 1 at or above it | A non-empty bootstrap summary, and at least one grid point below the CV threshold | A trilinear fit selected by AIC, and at least 2 distinct curve points in the plateau |
+| **Reported as non-finite when** | `m_lin <= 0` (noise only), or a support rule above fails | No grid point meets the CV threshold; or the LLOQ is at the top of the grid; or the LLOQ is <= 0; or the LOD is non-finite | The fit is bilinear (`c_high` is infinite); too few plateau points; `ULOQ <= 0`; or `ULOQ <= LOD` |
+| **Code** | `calculate_lod` | `calculate_loq` | `calculate_uloq` |
+
+Two notes about the defaults:
+
+- With `--model auto`, most curves get a bilinear fit, so `ULOQ` is non-finite
+for them. The `n_curvepoints` column separates "no saturation" from "too few
+levels to test for saturation".
+- The `piecewise` model uses different LOD edge cases: it compares the LOD
+against the second-lowest curve point and the maximum curve point, instead of
+counting the distinct points on each side. The table above describes the
+default `auto` path.
+
 **OPTIONS.**
 
 - `--std_mult`, default=2, type=float,
