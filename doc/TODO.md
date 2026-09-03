@@ -141,3 +141,50 @@ None of these change any reported figure of merit.
   is a sharper regression test than the synthetic cases in `tests/test_issues.py`, since
   the wide-format reading of real data is the ground truth. Verified by hand when #15
   was fixed (all 27 peptides matched to within 1e-9) but never committed as a test.
+
+## Downstream copies of the bootstrap still seed one global RNG
+
+Found 2026-09-03 in a separate session on a different dataset. `calculate-loq.py` is
+not affected; this is recorded here because the tool is the reference the copies are
+checked against, and because the same defect survives in the frozen 2021 script in
+this repo.
+
+**Symptom.** In a protein-level derivative of this tool
+(`scripts/calculate-loq-protein-level.py`, in a downstream repository), the LOQ and
+`avg_cv` are not reproducible across input sets. A 2-protein subset run to generate
+figures reproduced LOD, `slope_linear`, `intercept_linear` and `r2_linear` from the
+full 6,759-protein run exactly, but not the LOQ:
+
+| Protein | LOQ, 2-protein run | LOQ, full 6,759 run |
+|---------|-------------------:|--------------------:|
+| FOXO1   | 0.1238             | 0.1335              |
+| PAX3    | 0.1285             | 0.1563              |
+
+**Cause.** That script sets one global `np.random.seed(8888)` at import and the
+bootstrap draws with `df.sample()` off the global RNG. The stream a given protein sees
+therefore depends on how many proteins were processed before it, so the answer changes
+with the set and its order. Everything that does not touch the bootstrap (LOD, the
+linear fit) is unaffected, which is exactly the split observed.
+
+`bin/calculate-loq.py` does not have this problem: `_bootstrap_once` seeds each
+replicate from its own `SeedSequence` (see the note near the imports and the
+`default_rng(SeedSequence(seed))` call), and a 6-precursor subset reproduced the full
+run exactly once run coverage was matched.
+
+**Same pattern in this repo.** `bin/calculate-loq_2021diann.py` has the identical
+construction: `np.random.seed(8888)` / `random.seed(8888)` at module level and
+`df.sample(n=len(df), replace=True)` with no `random_state` in `bootstrap_once`. It is
+a frozen copy kept for the v1-vs-v2 benchmark, so it should probably not be changed,
+but any comparison against it should note that its LOQs are order- and subset-dependent
+and are only reproducible for a full run over the same input in the same order.
+
+**To do.**
+
+- Fix the protein-level script the same way as `_bootstrap_once`: derive one
+  `SeedSequence` per (peptide or protein, replicate) and pass a `Generator` or
+  `random_state` into `df.sample`. Re-run the 2-protein subset and confirm the LOQ and
+  `avg_cv` match the full run to the printed precision.
+- Add a regression test here that runs `calculate-loq.py` on a subset of
+  `data/one_protein.csv` and on the full file, and asserts the shared peptides match.
+  This is the property the downstream copy broke, and nothing in `tests/` pins it.
+- Decide whether the README paragraph on the 2021 script should state the caveat above.
