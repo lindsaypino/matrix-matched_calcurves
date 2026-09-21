@@ -251,6 +251,12 @@ def read_input(filename, col_conc_map_file):
         # remove colons in Unimod description, e.g. "AAVDC(UniMod:4)EC(UniMod:4)EFQNLEHNEK.png"
         df_long['peptide'] = df_long['peptide'].str.replace(':', '')
 
+    else:
+        raise ValueError(
+            'Input filetype not recognized for %s. Expected an EncyclopeDIA '
+            '*.elib.peptides.txt, Skyline export, DIA-NN *.pr_matrix.tsv or '
+            'diann_report.tsv, or Spectronaut output.' % filename)
+
     return _normalize_input(df_long, col_conc_map)
 
 
@@ -400,7 +406,12 @@ def fit_by_lmfit_yang(x, y, model, min_saturation_points=None):
     if min_saturation_points is None:
         min_saturation_points = DEFAULT_MIN_SATURATION_POINTS
 
-    # always compute weights
+    # always compute weights. 1/sqrt(x) is a proportional-error model; the cap of
+    # 1000 is a floor-guard, not a derived value -- it keeps the x=0 (blank) point
+    # finite rather than +inf. It gives blanks ~1e6x the squared leverage of a
+    # top-of-curve point, but results barely depend on it: changing 1000 -> 100
+    # moves the typical LOD by 0.49% (max 2.65%). See
+    # 2026_calcurve_paper/docs/fit_weighting_note.md.
     weights = np.minimum(1.0 / (np.sqrt(x) + np.finfo(float).eps), 1000)
 
     if model in ('piecewise', 'bilinear', 'trilinear'):
