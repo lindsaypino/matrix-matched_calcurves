@@ -71,7 +71,10 @@ genuine "no saturation" result from a curve that had too few levels for the
 `auto` model to look for one. Rows are written incrementally as each peptide
 finishes, so partial results survive an interrupted run. A peptide whose fit
 fails is never dropped: it still gets a row with non-finite figures of merit
-and the error message recorded in the `notes` column.
+and the error message recorded in the `notes` column. The `notes` column also records
+the LOQ outcome when it is not an ordinary interpolated crossing: `loq_no_crossing` (the
+CV never fell below the threshold) or `loq_at_lod` (quantifiable down to the detection
+limit, so the LLOQ equals the LOD).
 
 - `*.png` – (optional) plots of each peptide calibration curve with the
 fitted piecewise linear regression.
@@ -88,11 +91,11 @@ in the noise segment and in the saturation plateau.
 
 | | LOD | LLOQ (the `LOQ` column) | ULOQ |
 |---|---|---|---|
-| **Definition at the defaults** | The concentration at which the fitted linear segment gets to the noise intercept plus 2 noise standard deviations. | The lowest concentration above the LOD at which the bootstrap CV is less than 0.20 (20%). | The concentration at which the linear segment comes to 2 saturation standard deviations below the saturation ceiling. |
-| **Formula** | `LOD = (b_noise + 2*s_noise - b_lin) / m_lin` | `LLOQ = min{ x : CV(x) < 0.20 }`, where `CV(x) = std/mean` of the 100 bootstrap fits evaluated at `x` | `ULOQ = (c_high - 2*s_sat - b_lin) / m_lin` |
-| **Where it is measured** | The intersection of the noise and linear segments | A 100-point grid from the LOD up to `min(ULOQ, max curvepoint)` | The saturation onset, `(c_high - b_lin) / m_lin`, backed off by the plateau noise |
-| **Data support necessary** | At least 2 distinct curve points below the LOD, and at least 1 at or above it | A non-empty bootstrap summary, and at least one grid point below the CV threshold | A trilinear fit selected by AIC, and at least 2 distinct curve points in the plateau |
-| **Reported as non-finite when** | `m_lin <= 0` (noise only), or a support rule above fails | No grid point meets the CV threshold; or the LLOQ is at the top of the grid; or the LLOQ is <= 0; or the LOD is non-finite | The fit is bilinear (`c_high` is infinite); too few plateau points; `ULOQ <= 0`; or `ULOQ <= LOD` |
+| **Definition at the defaults** | The concentration at which the fitted linear segment gets to the noise intercept plus 2 noise standard deviations. | The concentration above the LOD where the bootstrap CV crosses below 0.20 (20%), interpolated between the two grid points that bracket the crossing. | The concentration at which the linear segment comes to 2 saturation standard deviations below the saturation ceiling. |
+| **Formula** | `LOD = (b_noise + 2*s_noise - b_lin) / m_lin` | `LLOQ = x*` where `CV(x*) = 0.20`, interpolated between the grid points bracketing the crossing (in log-`x` for a log-spaced design, linear-`x` for a linear one); `CV(x) = std/mean` of the 100 bootstrap fits at `x` | `ULOQ = (c_high - 2*s_sat - b_lin) / m_lin` |
+| **Where it is measured** | The intersection of the noise and linear segments | A 100-point grid from the LOD up to `min(ULOQ, max curvepoint)` — geometric spacing for a log-spaced dilution design, uniform for a linear one (auto-detected) | The saturation onset, `(c_high - b_lin) / m_lin`, backed off by the plateau noise |
+| **Data support necessary** | At least 2 distinct curve points below the LOD, and at least 1 at or above it | A non-empty bootstrap summary, and a CV that falls below the threshold somewhere above the LOD | A trilinear fit selected by AIC, and at least 2 distinct curve points in the plateau |
+| **Reported as non-finite when** | `m_lin <= 0` (noise only), or a support rule above fails | The CV stays above the threshold across the whole range (noted `loq_no_crossing`); or the LOD is non-finite. When the CV is already below threshold at the LOD, the LLOQ is reported as the LOD (noted `loq_at_lod`) | The fit is bilinear (`c_high` is infinite); too few plateau points; `ULOQ <= 0`; or `ULOQ <= LOD` |
 | **Code** | `calculate_lod` | `calculate_loq` | `calculate_uloq` |
 
 Two notes about the defaults:
