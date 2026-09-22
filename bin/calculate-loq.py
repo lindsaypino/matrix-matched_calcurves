@@ -535,33 +535,84 @@ def calculate_lod(model_params, df, std_mult, min_noise_points, min_linear_point
     return lod_results
 
 
-# find the intersection of the noise and linear regime
-def calculate_loq(model_params, boot_results, cv_thresh=0.2):
+def detect_spacing(x):
+    """Classify a dilution design as 'log' or 'linear' from its curve points.
 
-    # initialize the known LOD and a 'blank' LOQ
+    A log-spaced series has near-constant successive *ratios*; a linear series has
+    near-constant successive *differences*. Compare the coefficient of variation of the
+    ratios against that of the differences and pick whichever is more regular. The blank
+    (0) and any non-finite or duplicate points are dropped first. With fewer than three
+    distinct nonzero levels there is not enough to tell, so fall back to 'log' -- the
+    wide-dynamic-range calibration curves this tool targets are log-spaced.
+
+    The result selects the readout grid and the space the LOQ crossing is interpolated
+    in (see calculate_loq): geomspace / log-x for 'log', linspace / linear-x for 'linear'.
+    """
+    u = np.unique(np.asarray(x, dtype=float))
+    u = u[np.isfinite(u) & (u > 0)]
+    if u.size < 3:
+        return 'log'
+
+    def _cv(v):
+        m = np.mean(v)
+        return np.std(v) / m if m else np.inf
+
+    return 'linear' if _cv(np.diff(u)) < _cv(u[1:] / u[:-1]) else 'log'
+
+
+def calculate_loq(model_params, boot_results, cv_thresh=0.2, spacing='log'):
+    """Read the LOQ off the bootstrap CV curve: the concentration where the CV first
+    crosses below cv_thresh, moving up from the LOD.
+
+    The crossing is *interpolated* between the two grid points that bracket it, not
+    snapped to the lower grid point -- snapping made the reported value an artifact of
+    the grid's point count (up to a ~16% shift between a 100- and 400-point grid). It is
+    interpolated in log-x for a log-spaced design and in linear-x for a linear one, so
+    `spacing` must match the grid the CV was evaluated on.
+
+    Returns (LOQ, note):
+      - finite LOQ, note ''              an ordinary interpolated crossing (fit OK)
+      - the LOD, note 'loq_at_lod'       CV is already below threshold at the bottom of
+                                         the range: quantifiable down to detection
+      - inf, note 'loq_no_crossing'      CV never drops below threshold in [LOD, upper];
+                                         there is no LOQ, and the tool does not invent one
+    """
     LOD = model_params[4]
-    LOQ = float('Inf')
 
     if boot_results.empty:
-        LOQ = float('Inf')
+        return float('Inf'), 'loq_no_crossing'
+
+    # the quantifiable range sits strictly above the LOD; keep it in ascending x order
+    sub = boot_results[boot_results['boot_x'] > LOD].sort_values('boot_x')
+    x = sub['boot_x'].to_numpy(dtype=float)
+    cv = sub['boot_cv'].to_numpy(dtype=float)
+    finite = np.isfinite(x) & np.isfinite(cv)
+    x, cv = x[finite], cv[finite]
+
+    if x.size == 0:
+        return float('Inf'), 'loq_no_crossing'
+
+    below = cv < cv_thresh
+    if not below.any():
+        # the CV curve stays above threshold everywhere above the LOD -> no LOQ exists
+        return float('Inf'), 'loq_no_crossing'
+    if below[0]:
+        # already under threshold at the first point above the LOD: the crossing sits at
+        # or below the LOD, so the curve is quantifiable down to its detection limit
+        return float(LOD), 'loq_at_lod'
+
+    # first grid point that dips under threshold; the crossing lies in (x[i-1], x[i])
+    i = int(np.argmax(below))
+    x0, x1, c0, c1 = x[i - 1], x[i], cv[i - 1], cv[i]
+    if spacing == 'log' and x0 > 0 and x1 > 0:
+        log_loq = np.log(x0) + (cv_thresh - c0) * (np.log(x1) - np.log(x0)) / (c1 - c0)
+        LOQ = float(np.exp(log_loq))
     else:
-        # subset the bootstrap results for just those values above the LOD
-        boot_subset = boot_results[(boot_results['boot_x'] > LOD)]
+        LOQ = float(x0 + (cv_thresh - c0) * (x1 - x0) / (c1 - c0))
 
-        # Mask picking out good CVs
-        good_cv = boot_subset["boot_cv"] < cv_thresh
-
-        if 0 == good_cv.sum():
-            LOQ = float('Inf')
-        else:
-            # LOQ is the lowest concentration at which CV < threshold
-            LOQ = boot_subset[good_cv]['boot_x'].min()
-
-            # LOQ edge cases
-            if LOQ >= boot_results['boot_x'].max() or LOQ <= 0:
-                LOQ = float('Inf')
-
-    return LOQ
+    # ordinary interpolated crossing: leave the note empty (an empty note means fit OK),
+    # so only the two non-standard outcomes above are flagged for downstream analysis
+    return LOQ, ''
 
 
 # find the upper limit of quantitation from the saturation plateau of a trilinear
@@ -856,6 +907,7 @@ def _process_peptide_core(bootreps, cv_thresh, output_dir, peptide, plot_or_not,
     if np.isfinite(ULOQ) and np.isfinite(LOD) and ULOQ <= LOD:
         ULOQ = float('inf')
 
+    loq_note = ''
     if not np.isfinite(LOD):
         LOQ = np.inf
         bootstrap_df = bootstrap_many(subset, [np.nan], num_bootreps=0)  # shortcut to get empty DF
@@ -867,7 +919,14 @@ def _process_peptide_core(bootreps, cv_thresh, output_dir, peptide, plot_or_not,
         upper = min(ULOQ, max(x)) if np.isfinite(ULOQ) else max(x)
         if upper <= LOD:
             upper = max(x)
-        x_i = np.linspace(LOD, upper, num=100, dtype=float)
+        # match the readout grid to the empirical dilution spacing: a log-spaced design
+        # gets a geometric grid (fine resolution down where the LOQ sits), a linear one a
+        # uniform grid. The LOQ crossing is interpolated in the same space (calculate_loq).
+        use_log = (detect_spacing(x) == 'log' and LOD > 0)
+        if use_log:
+            x_i = np.geomspace(LOD, upper, num=100, dtype=float)
+        else:
+            x_i = np.linspace(LOD, upper, num=100, dtype=float)
 
         bootstrap_df = bootstrap_many(subset, new_x=x_i, num_bootreps=bootreps, model=boot_model)
 
@@ -876,7 +935,8 @@ def _process_peptide_core(bootreps, cv_thresh, output_dir, peptide, plot_or_not,
                                                         'bootstrapsummary_' + peptide + '.csv'),
                                index=True)
 
-        LOQ = calculate_loq(model_parameters, bootstrap_df, cv_thresh)
+        LOQ, loq_note = calculate_loq(model_parameters, bootstrap_df, cv_thresh,
+                                      'log' if use_log else 'linear')
 
     model_parameters = np.append(model_parameters, LOQ)
 
@@ -892,7 +952,7 @@ def _process_peptide_core(bootreps, cv_thresh, output_dir, peptide, plot_or_not,
 
     # make a dataframe row with the peptide and its figures of merit ('' note = fit OK)
     new_row = [peptide, LOD, LOQ, ULOQ, slope_linear, intercept_linear, intercept_noise, std_noise,
-               len(np.unique(x)), '']
+               len(np.unique(x)), loq_note]
     new_df_row = pd.DataFrame([new_row], columns=FOM_COLUMNS)
 
     return new_df_row

@@ -48,5 +48,6 @@ python3.9 -m venv .venv-benchmark
 
 Compare the resulting `figuresofmerit.csv` against the output of the current
 tool (`bin/calculate-loq.py`) to attribute LOD/LOQ differences to method changes
-(e.g. sample vs population noise standard deviation, the corrected LOQ formula)
+(e.g. sample vs population noise standard deviation, and the interpolated,
+spacing-aware LOQ readout that replaced grid snapping — see `CHANGELOG.md`)
 rather than environment artifacts.
