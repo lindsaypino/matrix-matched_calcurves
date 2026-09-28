@@ -9,6 +9,25 @@ release tag.
 
 ## Unreleased
 
+### Added — detection gate (`--min_detections`)
+
+A new `--min_detections` option (default 3) refuses a finite LOD/LOQ for a peptide that
+was actually reported at fewer than that many distinct dilution levels.
+
+- **Why.** Missing cells are backfilled with zero so lmfit has a value at every run. A
+  search engine that reports only where a precursor is identified (DIA-NN) leaves the
+  low-concentration cells empty, so for a peptide seen at only one or two levels the fit
+  is drawn through backfilled zeros and returns a confident LOD pinned to a dilution
+  step. That is a fabricated limit, not a measured one.
+- **What it counts.** The number of dilution levels with a real, non-null reported value,
+  counted in `_normalize_input` *before* the zero-fill (the search engine's own detection
+  call). Three levels = two to fit the linear segment plus one to anchor the noise.
+- **Effect.** Peptides below the threshold get non-finite LOD/LOQ/ULOQ and the note
+  `below_min_detections`; the bootstrap is skipped for them. Peptides at or above the
+  threshold are unchanged (bit-identical) — the gate only removes fabricated rows. Dense
+  inputs (EncyclopeDIA integrates the window at every run, so every level is reported)
+  never trip the gate. Set `--min_detections 0` to disable.
+
 ### Changed — LOQ readout (matrix-matched_calcurves#21)
 
 How `calculate_loq` reads the LOQ off the bootstrap CV curve was rewritten. LOD and ULOQ
