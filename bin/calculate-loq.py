@@ -14,6 +14,15 @@ from lmfit.models import LinearModel
 DEFAULT_MIN_LINEAR_POINTS = 1
 DEFAULT_MIN_NOISE_POINTS = 2
 DEFAULT_MIN_SATURATION_POINTS = 2  # curve points required in the saturation plateau for a trilinear (ULOQ) fit
+# Minimum number of dilution levels a peptide must have been *actually reported at*
+# (before the missing-cell zero-fill) for the tool to return a finite LOD/LOQ. Guards
+# against fabricated limits on sparse inputs: a search engine like DIA-NN writes no row
+# where a precursor is not identified, so those cells get backfilled to zero; a peptide
+# seen at only one or two levels then gets a line fit through backfilled zeros and a
+# confident LOD pinned to a dilution step. Three = two points to fit the line plus one
+# to anchor the noise. Set to 0 to disable the gate. Dense inputs (EncyclopeDIA
+# integrates the window at every run) report all levels, so the gate is a no-op there.
+DEFAULT_MIN_DETECTIONS = 3
 
 # Set the plot style, tolerating both the modern name (matplotlib >=3.6) and the
 # legacy 'seaborn-whitegrid'. This runs at import time in every worker process,
@@ -127,6 +136,15 @@ def _normalize_input(df_long, col_conc_map):
     # drop anything the map doesn't annotate; only mapped runs define a curve point
     df_long = df_long[df_long['filename'].isin(col_conc_map['filename'])]
 
+    # detection count BEFORE the zero-fill: how many distinct dilution levels the peptide
+    # was actually reported at (a real, non-null value). This is the search engine's own
+    # detection call -- a reported row in DIA-NN, an integrated value in EncyclopeDIA --
+    # and it is lost once _complete_grid backfills the missing cells with zero. The gate
+    # in _process_peptide_core reads it to refuse a finite LOD/LOQ on sparse peptides.
+    _pre = pd.merge(df_long[df_long['area'].notna()], col_conc_map, on='filename', how='left')
+    n_detected = _pre.groupby('peptide')['concentration'].apply(
+        lambda s: pd.to_numeric(s, errors='coerce').nunique())
+
     # every peptide spans every measured run, missing cells read as zero
     df_long = _complete_grid(df_long)
 
@@ -140,6 +158,9 @@ def _normalize_input(df_long, col_conc_map):
     # replace NaN values with zero
     # TODO: is this appropriate? it's required for lmfit in any case
     df_melted = df_melted.fillna({'area': 0})
+
+    # carry the pre-fill detection count as a per-peptide constant column
+    df_melted['n_detected'] = df_melted['peptide'].map(n_detected).fillna(0).astype(int)
 
     return df_melted.sort_values(by=['peptide'] + SORT_KEYS,
                                  kind='mergesort').reset_index(drop=True)
@@ -857,7 +878,7 @@ def process_peptide(*args):
         return pd.DataFrame([row], columns=FOM_COLUMNS)
 
 
-def _process_peptide_core(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, min_saturation_points, subset, verbose, model_choice):
+def _process_peptide_core(bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult, min_noise_points, min_linear_points, min_saturation_points, subset, verbose, model_choice, min_detections=DEFAULT_MIN_DETECTIONS):
     # A peptide with no usable curve points cannot be fit at all. The common cause is
     # --multiplier_file carrying no multiplier for it, which sends its curve points to
     # NaN (see associate_multiplier). Say that in the notes column rather than letting
@@ -907,8 +928,25 @@ def _process_peptide_core(bootreps, cv_thresh, output_dir, peptide, plot_or_not,
     if np.isfinite(ULOQ) and np.isfinite(LOD) and ULOQ <= LOD:
         ULOQ = float('inf')
 
+    # detection gate: refuse a finite LOD/LOQ/ULOQ when the peptide was reported at fewer
+    # than min_detections real dilution levels (before the missing-cell zero-fill). Guards
+    # against limits fabricated from backfilled zeros on sparse inputs (e.g. DIA-NN). The
+    # count rides on the subset as 'n_detected'; fall back to distinct nonzero levels if it
+    # is unavailable (e.g. --multiplier_file dropped the column).
+    if 'n_detected' in subset.columns:
+        n_detected = int(subset['n_detected'].iloc[0])
+    else:
+        n_detected = int(np.unique(x[x > 0]).size)
+    gated = bool(min_detections) and n_detected < min_detections
+
     loq_note = ''
-    if not np.isfinite(LOD):
+    if gated:
+        LOD = np.inf
+        LOQ = np.inf
+        ULOQ = np.inf
+        loq_note = 'below_min_detections'
+        bootstrap_df = bootstrap_many(subset, [np.nan], num_bootreps=0)  # empty DF; no bootstrap
+    elif not np.isfinite(LOD):
         LOQ = np.inf
         bootstrap_df = bootstrap_many(subset, [np.nan], num_bootreps=0)  # shortcut to get empty DF
     else:
@@ -991,6 +1029,13 @@ def main():
                         help="minimum curve points in the high-signal saturation plateau required for the "
                              "'auto' model to adopt a trilinear (noise + linear + saturation) fit and report a "
                              "ULOQ; raise to be more conservative about calling saturation")
+    parser.add_argument('--min_detections', default=DEFAULT_MIN_DETECTIONS, type=int,
+                        help="minimum number of dilution levels a peptide must be actually reported at "
+                             "(a real, non-null value, counted before missing cells are zero-filled) for a "
+                             "finite LOD/LOQ to be returned; peptides below this are marked "
+                             "'below_min_detections' with non-finite figures of merit. Guards against limits "
+                             "fabricated from backfilled zeros on sparse inputs (e.g. DIA-NN). Set to 0 to "
+                             "disable. Dense inputs (EncyclopeDIA) report every level, so the gate is a no-op.")
     parser.add_argument('--multiplier_file', type=str,
                         help='use a single-point multiplier associated with the curve data peptides')
     parser.add_argument('--output_path', default=os.getcwd(), type=str,
@@ -1022,6 +1067,7 @@ def main():
     min_noise_points = args.min_noise_points
     min_linear_points = args.min_linear_points
     min_saturation_points = args.min_saturation_points
+    min_detections = args.min_detections
     multiplier_file = args.multiplier_file
     output_dir = args.output_path
     plot_or_not = args.plot
@@ -1046,7 +1092,8 @@ def main():
 
     def job_args(peptide, subset):
         return (bootreps, cv_thresh, output_dir, peptide, plot_or_not, std_mult,
-                min_noise_points, min_linear_points, min_saturation_points, subset, verbose, model_type)
+                min_noise_points, min_linear_points, min_saturation_points, subset, verbose, model_type,
+                min_detections)
 
     def note_row(peptide, exc):
         # never drop a peptide: emit a row with non-finite FOMs and the error note
