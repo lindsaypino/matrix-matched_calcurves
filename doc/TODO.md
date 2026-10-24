@@ -1,8 +1,14 @@
 # TODO
 
-Open questions about `calculate-loq` that aren't tracked as GitHub issues yet.
+Open questions about `calculate-loq` that aren't tracked as GitHub issues yet, plus
+settled decisions recorded so they are not reopened.
 
 ## Decide whether the `notes` column stays in figuresofmerit.csv
+
+Still open. Related: matrix-matched_calcurves#24 (map the notes to short stable codes).
+Since this was written, #23 and #25 added the notes `loq_no_crossing`, `loq_at_lod` and
+`below_min_detections`, so the column is no longer only a fit-failure field and the
+"empty for every row" observation below predates them.
 
 Added by `2205392` ("Never drop a peptide: record fit failures as noted rows"), which
 changed the output schema from
@@ -36,7 +42,12 @@ Things to weigh:
 Raised while regenerating the paper's figures of merit; see
 `2026_calcurve_paper/docs/fom_provenance.md` for the run that surfaced it.
 
-## Decide whether to change how the LOQ is read off the CV curve
+## Settled: how the LOQ is read off the CV curve
+
+Decided and implemented in matrix-matched_calcurves#23 (`6a017bb`, closes #21): a
+design-matched grid (geometric for log-spaced dilutions), an interpolated crossing, and
+an explicit `loq_no_crossing` outcome. See the CHANGELOG entry for the effect on the
+sample dataset. The analysis that led to the decision is kept below.
 
 Two changes to `calculate_loq` would alter reported LOQ values. Nothing else on this
 page does, so these are the only items that need settling before figures of merit are
@@ -110,41 +121,22 @@ collapses onto the LOD.
 Figure: `SUPP_bootstrap_calibration` from `figures/supp_bootstrap_calibration.py` in
 `2026_calcurve_paper`.
 
-## Small defects found but not filed as issues
+## Small defects: all fixed or filed
 
-None of these change any reported figure of merit.
+None of these change any reported figure of merit. Kept as a pointer list.
 
-- **Unrecognized input filetype raises `UnboundLocalError`.** `read_input` ends with
-  `return _normalize_input(df_long, col_conc_map)` and no `else` branch, so a header
-  matching none of the readers fails on an undefined name instead of saying the
-  filetype was not recognized. Pre-existing (it did the same with `df_melted`), and
-  now easy to fix cleanly since every branch funnels through one tail.
-- **`build_plots` resamples without a seed.** The CV scatter in the bottom subplot
-  calls `df.sample(n=len(df), replace=True)` with no `random_state`, so plotted CVs
-  differ between runs on identical input. Plots only -- `figuresofmerit.csv` is
-  unaffected.
-- **The fit weight cap of 1000 is an undocumented magic number.** Weights are
-  `min(1/sqrt(x), 1000)`; the `1/sqrt(x)` part is an ordinary proportional-error
-  model, but the cap is what keeps a 0-concentration point finite and it gives blank
-  replicates roughly a million times the squared leverage of a top-of-curve point.
-  Changing it 1000 -> 100 moves the typical LOD by 0.49% (max 2.65%), so results do
-  not hinge on it -- but it deserves a comment saying it is a floor-guard rather than
-  a derived value. See `2026_calcurve_paper/docs/fit_weighting_note.md`.
-- **`tests/test_calculate_loq.py::bench_process_nonquant_peptide` is stale.** It calls
-  `process_peptide` with 8 positional arguments; the signature has needed 12 since the
-  min-points parameters were added, so it would `TypeError`. It is masked because
-  `pytest-benchmark` is declared in `tests/conda-env.txt` but not installed in the
-  local venv, so both benchmark tests error at setup instead of running. That is the
-  two errors on every `pytest` run.
-- **No round-trip test for the reader.** Re-expressing `data/one_protein.csv` as a
-  ragged long-format `diann_report.tsv` and checking it reproduces the golden snapshot
-  is a sharper regression test than the synthetic cases in `tests/test_issues.py`, since
-  the wide-format reading of real data is the ground truth. Verified by hand when #15
-  was fixed (all 27 peptides matched to within 1e-9) but never committed as a test.
+- **Unrecognized input filetype raised `UnboundLocalError`.** Fixed in `d80f50e`;
+  `read_input` now raises a "filetype not recognized" error.
+- **The fit weight cap of 1000 was an undocumented magic number.** Documented as a
+  floor-guard in `d80f50e`. See `2026_calcurve_paper/docs/fit_weighting_note.md`.
+- **`build_plots` resampled without a seed.** matrix-matched_calcurves#18; fixed by
+  seeding the plot resample per call.
+- **Stale `bench_process_nonquant_peptide` benchmark.** matrix-matched_calcurves#17.
+- **No round-trip test for the reader.** matrix-matched_calcurves#19.
 
 ## Downstream copies of the bootstrap still seed one global RNG
 
-Found 2026-09-03 in a separate session on a different dataset. `calculate-loq.py` is
+Filed as matrix-matched_calcurves#20. Found 2026-09-03 in a separate session on a different dataset. `calculate-loq.py` is
 not affected; this is recorded here because the tool is the reference the copies are
 checked against, and because the same defect survives in the frozen 2021 script in
 this repo.
