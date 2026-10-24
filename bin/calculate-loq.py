@@ -803,9 +803,12 @@ def build_plots(peptide, x, y, model_results, boot_results, num_bootreps, std_mu
 
     # Instead of direct CV, match prediction boostrap and take CV of resampled _means_
     # Collect per-rep means into a list, then concat once (avoids O(n²) concat-in-loop)
+    # Seeded per call (not from the global RNG) so the plotted CVs are reproducible and
+    # do not depend on which peptides were plotted before this one.
+    rng = np.random.default_rng(np.random.SeedSequence(0))
     boot_means_list = []
     for i in range(num_bootreps):
-        resampled_df = df.sample(n=len(df), replace=True)
+        resampled_df = df.sample(n=len(df), replace=True, random_state=rng)
         boot_means_list.append(resampled_df.groupby("curvepoint")["area"].mean())
 
     # Compute the average/std across boostrapped means for each point
