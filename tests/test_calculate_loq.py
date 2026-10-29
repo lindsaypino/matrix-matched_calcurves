@@ -2,6 +2,7 @@
 `benchmarks.py` -- run benchmarks on `calculate_loq.py`
 """
 
+import os
 import sys
 
 sys.path.append("bin")
@@ -11,15 +12,22 @@ import numpy as np
 import pytest
 import subprocess
 
+# every test in this module needs the `benchmark` fixture; skip cleanly instead of
+# erroring at setup when pytest-benchmark is not installed
+pytest.importorskip("pytest_benchmark")
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 
 @pytest.fixture
 def mock_dataset():
-    return ("data/one_protein.csv", "data/filename2samplegroup_map.csv")
+    return (os.path.join(REPO, "data", "one_protein.csv"),
+            os.path.join(REPO, "data", "filename2samplegroup_map.csv"))
 
 
 def bench_calculate_loq(tmp_path, dataset):
     cmd = [
-        "python", "bin/calculate-loq.py",
+        sys.executable, os.path.join(REPO, "bin", "calculate-loq.py"),
         "--output_path", tmp_path,
         *dataset
     ]
@@ -36,12 +44,21 @@ def bench_process_nonquant_peptide(calculate_loq, subset):
         0.2,  # cv thresh
         None,  # output dir
         subset.iloc[0]["peptide"],
-        False,  # plot_or_not
+        "n",  # plot_or_not
         2.0,  # std mult
+        calculate_loq.DEFAULT_MIN_NOISE_POINTS,
+        calculate_loq.DEFAULT_MIN_LINEAR_POINTS,
+        calculate_loq.DEFAULT_MIN_SATURATION_POINTS,
         subset,
-        False
+        "n",  # verbose
+        "auto",  # model
     )
 
+    # process_peptide never raises: a failed call comes back as a row with LOD = inf
+    # and the exception in 'notes', which would pass the LOD check below. Require a
+    # real fit first (this is how the 8-argument call stayed hidden, issue #17).
+    note = result_row.iloc[0]["notes"]
+    assert note in ("", "below_min_detections"), f"process_peptide failed: {note}"
     assert np.isinf(result_row.iloc[0]["LOD"]), "Got LOD for non-quantitative peptide!!"
 
 
