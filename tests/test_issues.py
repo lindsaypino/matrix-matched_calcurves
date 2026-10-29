@@ -27,6 +27,10 @@ Regression tests for specific reported issues in calculate-loq.py.
 - associate_multiplier inner-joined on peptide, so any peptide absent from
   --multiplier_file vanished from the output entirely. Peptides are kept now, with
   a note explaining the missing multiplier.
+
+- Issue #20: a bootstrap that draws from one global RNG makes a peptide's LOQ depend
+  on how many peptides ran before it. Running a subset must give the same figures of
+  merit for the shared peptides as running the full file.
 """
 
 import importlib
@@ -260,6 +264,45 @@ def test_figures_of_merit_are_row_order_independent(calc):
             assert np.isclose(got[col], reference[col], rtol=1e-12, equal_nan=True), (
                 f"{col} changed with row order: {reference[col]} -> {got[col]}"
             )
+
+
+# --- Issue #20: figures of merit must not depend on the set of peptides run ---------
+def test_figures_of_merit_do_not_depend_on_the_peptide_set(tmp_path):
+    """Shared peptides get the same figures of merit from a subset run as from the
+    full run. Both run serially (--n_threads 1) in one process, which is where a
+    global-RNG bootstrap would hand each peptide a stream that depends on how many
+    peptides were processed before it."""
+    def run(curve_data, out):
+        out.mkdir()
+        cmd = [sys.executable, SCRIPT, str(curve_data), CONC_MAP,
+               "--output_path", str(out), "--plot", "n", "--bootreps", "100",
+               "--n_threads", "1"]
+        proc = subprocess.run(cmd, cwd=REPO, capture_output=True,
+                              encoding="utf-8", errors="replace")
+        assert proc.returncode == 0, proc.stderr
+        fom = pd.read_csv(os.path.join(str(out), "figuresofmerit.csv"))
+        return fom.set_index("peptide").sort_index()
+
+    full = run(CURVE_DATA, tmp_path / "full")
+
+    # peptides with a bootstrap-derived (finite) LOQ; keep every 4th, skipping the
+    # first, so each kept peptide loses the peptides that ran before it in the full run
+    quantified = sorted(full.index[np.isfinite(full["LOQ"])])
+    keep = quantified[3::4]
+    assert len(keep) >= 3, f"too few quantified peptides to test: {quantified}"
+
+    wide = pd.read_csv(CURVE_DATA)
+    subset_path = tmp_path / "subset.csv"
+    wide[wide["Peptide"].isin(keep)].to_csv(subset_path, index=False)
+    subset = run(subset_path, tmp_path / "subset")
+
+    assert list(subset.index) == keep
+    for col in NUMERIC_COLS + ["ULOQ"]:
+        a = subset[col].to_numpy(dtype=float)
+        f = full.loc[keep, col].to_numpy(dtype=float)
+        assert np.allclose(a, f, rtol=1e-12, atol=0.0, equal_nan=True), (
+            f"{col} for {keep} changed between the subset and the full run"
+        )
 
 
 # --- piecewise must reproduce the 2021 legacy model, edge cases included --------
