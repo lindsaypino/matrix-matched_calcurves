@@ -201,3 +201,14 @@ method, kept for comparing old vs new LOD/LOQ calculations. It must be run in
 its pinned 2021-era environment (`requirements-2021.txt` / `Dockerfile.benchmark`)
 — newer pandas/matplotlib silently change its results. See
 [doc/BENCHMARK.md](doc/BENCHMARK.md).
+
+Its LOQ values are reproducible only for a full run over the same input file.
+The script seeds one global RNG at import (`np.random.seed(8888)`), and its
+bootstrap draws from that RNG (`df.sample` with no `random_state`). So the
+random stream each peptide gets depends on how many peptides ran before it.
+Running a subset of the peptides, or the same peptides in a different order,
+can change the LOQ. LOD and the linear fit do not use the bootstrap, so they do
+not change. The script is frozen, so this is not fixed here.
+`bin/calculate-loq.py` seeds each bootstrap replicate separately and does not
+have this problem (see `test_figures_of_merit_do_not_depend_on_the_peptide_set`
+in `tests/test_issues.py`).
