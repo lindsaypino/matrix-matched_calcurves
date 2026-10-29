@@ -72,7 +72,10 @@ def _run(args, output_dir):
         "--plot", "n",
         "--bootreps", "100",
     ] + args.get("extra", [])
-    return subprocess.run(cmd, cwd=REPO, capture_output=True, text=True)
+    # decode as UTF-8, not the locale code page: on Windows (cp1252) the tqdm progress
+    # bar's bytes fail to decode and proc.stderr comes back None (issue #27)
+    return subprocess.run(cmd, cwd=REPO, capture_output=True,
+                          encoding="utf-8", errors="replace")
 
 
 # --- Issue #11: serial mode ---------------------------------------------------
