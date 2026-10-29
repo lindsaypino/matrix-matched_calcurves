@@ -121,7 +121,7 @@ collapses onto the LOD.
 Figure: `SUPP_bootstrap_calibration` from `figures/supp_bootstrap_calibration.py` in
 `2026_calcurve_paper`.
 
-## Small defects: all fixed or filed
+## Small defects: all fixed
 
 None of these change any reported figure of merit. Kept as a pointer list.
 
@@ -129,10 +129,13 @@ None of these change any reported figure of merit. Kept as a pointer list.
   `read_input` now raises a "filetype not recognized" error.
 - **The fit weight cap of 1000 was an undocumented magic number.** Documented as a
   floor-guard in `d80f50e`. See `2026_calcurve_paper/docs/fit_weighting_note.md`.
-- **`build_plots` resampled without a seed.** matrix-matched_calcurves#18; fixed by
-  seeding the plot resample per call.
-- **Stale `bench_process_nonquant_peptide` benchmark.** matrix-matched_calcurves#17.
-- **No round-trip test for the reader.** matrix-matched_calcurves#19.
+- **`build_plots` resampled without a seed.** matrix-matched_calcurves#18; fixed in
+  #26 by seeding the plot resample per call.
+- **Stale `bench_process_nonquant_peptide` benchmark.** matrix-matched_calcurves#17;
+  fixed in #29. The call is current, and a caught error now fails the test.
+- **No round-trip test for the reader.** matrix-matched_calcurves#19; added in #30.
+- **`test_issues.py` failed on Windows (cp1252 decode of subprocess output).**
+  matrix-matched_calcurves#27; fixed by decoding the child's output as UTF-8.
 
 ## Downstream copies of the bootstrap still seed one global RNG
 
@@ -170,13 +173,12 @@ a frozen copy kept for the v1-vs-v2 benchmark, so it should probably not be chan
 but any comparison against it should note that its LOQs are order- and subset-dependent
 and are only reproducible for a full run over the same input in the same order.
 
-**To do.**
+**Done in this repo (#31).** `test_figures_of_merit_do_not_depend_on_the_peptide_set`
+runs `calculate-loq.py` on a subset of `data/one_protein.csv` and on the full file and
+asserts the shared peptides match; it fails on LOQ when the global-RNG bootstrap is put
+back. The README BENCHMARK section now states the caveat for the 2021 script.
 
-- Fix the protein-level script the same way as `_bootstrap_once`: derive one
-  `SeedSequence` per (peptide or protein, replicate) and pass a `Generator` or
-  `random_state` into `df.sample`. Re-run the 2-protein subset and confirm the LOQ and
-  `avg_cv` match the full run to the printed precision.
-- Add a regression test here that runs `calculate-loq.py` on a subset of
-  `data/one_protein.csv` and on the full file, and asserts the shared peptides match.
-  This is the property the downstream copy broke, and nothing in `tests/` pins it.
-- Decide whether the README paragraph on the 2021 script should state the caveat above.
+**To do (downstream repository).** Fix the protein-level script the same way as
+`_bootstrap_once`: derive one `SeedSequence` per (peptide or protein, replicate) and
+pass a `Generator` or `random_state` into `df.sample`. Re-run the 2-protein subset and
+confirm the LOQ and `avg_cv` match the full run to the printed precision.
