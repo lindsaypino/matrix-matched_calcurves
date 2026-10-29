@@ -20,6 +20,10 @@ Regression tests for specific reported issues in calculate-loq.py.
   whatever order the reader emitted rows in. Every input is now normalized to a
   dense grid in canonical (curvepoint, area) order.
 
+- Issue #19: round trip on real data. data/one_protein.csv re-expressed as a ragged
+  DIA-NN report.tsv must read back to the same frame as the wide file and reproduce
+  the golden figures of merit.
+
 - --model piecewise discarded its own LOD edge cases, returning the raw LOD where
   the 2021 original returns the edge-case-corrected result. It exists to reproduce
   the legacy model, so the overrides are honored again.
@@ -230,6 +234,60 @@ def test_reader_output_is_canonically_sorted(calc, tmp_path):
     df = calc.read_input(str(report), str(conc_map))
     expected = df.sort_values(["peptide"] + calc.SORT_KEYS, kind="mergesort")
     assert df.equals(expected.reset_index(drop=True))
+
+
+# --- Issue #19: round trip, wide EncyclopeDIA -> ragged DIA-NN report.tsv -----------
+def _write_ragged_report(report_path):
+    """Re-express CURVE_DATA as a long-format diann_report.tsv with no row for any
+    zero or missing cell -- what DIA-NN writes for a precursor it did not identify.
+    Returns the number of cells left out."""
+    wide = pd.read_csv(CURVE_DATA)
+    long = (wide.drop(columns=["Protein", "numFragments"])
+                .melt(id_vars="Peptide", var_name="File.Name", value_name="Precursor.Quantity"))
+    ragged = long[long["Precursor.Quantity"].notna() & (long["Precursor.Quantity"] != 0)]
+    ragged = ragged.rename(columns={"Peptide": "Precursor.Id"})
+    ragged["Stripped.Sequence"] = ragged["Precursor.Id"]
+    ragged.to_csv(report_path, sep="\t", index=False)
+    return len(long) - len(ragged)
+
+
+def test_ragged_report_reads_back_to_the_wide_frame(calc, tmp_path):
+    """The densified ragged report gives exactly the frame the wide file gives."""
+    report = tmp_path / "diann_report.tsv"
+    n_dropped = _write_ragged_report(report)
+    assert n_dropped > 0, "no cells dropped; the report is not ragged and tests nothing"
+
+    cols = ["peptide", "curvepoint", "area"]
+    wide = calc.read_input(CURVE_DATA, CONC_MAP)[cols]
+    ragged = calc.read_input(str(report), CONC_MAP)[cols]
+    pd.testing.assert_frame_equal(ragged, wide, check_exact=True)
+
+
+def test_ragged_report_reproduces_golden(tmp_path):
+    """End to end: the ragged report reproduces the golden figures of merit."""
+    report = tmp_path / "diann_report.tsv"
+    _write_ragged_report(report)
+
+    out = tmp_path / "out"
+    out.mkdir()
+    cmd = [sys.executable, SCRIPT, str(report), CONC_MAP,
+           "--output_path", str(out), "--plot", "n", "--bootreps", "100"]
+    proc = subprocess.run(cmd, cwd=REPO, capture_output=True,
+                          encoding="utf-8", errors="replace")
+    assert proc.returncode == 0, proc.stderr
+
+    actual = pd.read_csv(os.path.join(str(out), "figuresofmerit.csv"))
+    actual = actual.sort_values("peptide").reset_index(drop=True)
+    golden = pd.read_csv(GOLDEN).sort_values("peptide").reset_index(drop=True)
+
+    assert list(actual["peptide"]) == list(golden["peptide"])
+    for col in NUMERIC_COLS + ["ULOQ", "n_curvepoints"]:
+        a = actual[col].to_numpy(dtype=float)
+        g = golden[col].to_numpy(dtype=float)
+        assert np.allclose(a, g, rtol=1e-9, atol=0.0, equal_nan=True), (
+            f"round-trip output for {col} differs from golden"
+        )
+    assert list(actual["notes"].fillna("")) == list(golden["notes"].fillna(""))
 
 
 def test_figures_of_merit_are_row_order_independent(calc):
