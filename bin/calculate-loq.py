@@ -825,6 +825,13 @@ def build_plots(peptide, x, y, model_results, boot_results, num_bootreps, std_mu
                 color='c',
                 label=('LOQ = %.3e' % LOQ))
 
+    # re-draw the ULOQ here too: plt.legend() below only collects handles from this
+    # (bottom) subplot, so a ULOQ drawn only in the top panel never got a legend entry
+    if np.isfinite(ULOQ):
+        plt.axvline(x=ULOQ,
+                    color='orange',
+                    label=('ULOQ = %.3e' % ULOQ))
+
     # add 20%CV reference line
     plt.axhline(y=cv_thresh, color='r', linestyle='dashed')
 
@@ -841,8 +848,8 @@ def build_plots(peptide, x, y, model_results, boot_results, num_bootreps, std_mu
                  ymax=(max(boot_results['boot_cv'].max(), cv.max())*1.05))
 
     # save the figure
-    # add legend with LOD and LOQ values
-    legend = plt.legend(loc=8, bbox_to_anchor=(0, -.75, 1., .102), ncol=2)
+    # add legend with LOD, LOQ and (when finite) ULOQ values
+    legend = plt.legend(loc=8, bbox_to_anchor=(0, -.75, 1., .102), ncol=3)
     plt.savefig(os.path.join(output_dir, peptide + '.png'),
                 bbox_extra_artists=(legend,),
                 bbox_inches='tight', pad_inches=0.75)

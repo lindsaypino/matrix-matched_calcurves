@@ -11,6 +11,9 @@ Regression tests for specific reported issues in calculate-loq.py.
 - Issue #12: warn when the filename/concentration map is blank or has
   unannotated rows.
 
+- Issue #14: build_plots drew the ULOQ line only in the top subplot, but builds the
+  legend from the bottom one, so the ULOQ never got a legend entry.
+
 - Issue #15: DIA-NN's report.tsv is long format and only carries a row where the
   precursor was identified, so read_input returned a ragged curve -- the runs a
   peptide dropped out of were absent rather than zero. read_input now completes
@@ -335,3 +338,30 @@ def test_figuresofmerit_reports_level_count(tmp_path):
     assert "n_curvepoints" in fom.columns
     # the sample dataset is a dense 14-point curve for every peptide
     assert (fom["n_curvepoints"] == 14).all()
+
+
+# --- Issue #14: ULOQ missing from the plot legend --------------------------------
+@pytest.mark.parametrize("uloq, expect_entry", [(3.5, True), (np.inf, False)])
+def test_plot_legend_lists_uloq(calc, tmp_path, monkeypatch, uloq, expect_entry):
+    """A finite ULOQ gets a legend entry; an infinite one (bilinear fit) does not."""
+    calc.plt.switch_backend("Agg")
+    labels = []
+
+    def capture_legend(*args, **kwargs):
+        # build_plots calls savefig after plt.legend(), with the CV subplot current
+        labels.extend(t.get_text() for t in calc.plt.gca().get_legend().get_texts())
+
+    monkeypatch.setattr(calc.plt, "savefig", capture_legend)
+
+    x = np.repeat([0.0, 1.0, 2.0, 3.0, 4.0, 5.0], 3)
+    y = np.minimum(np.maximum(100.0 * x, 20.0), 400.0) + np.tile([-5.0, 0.0, 5.0], 6)
+    # (slope_noise, intercept_noise, slope_linear, intercept_linear, LOD, std_noise, LOQ)
+    model_results = (0.0, 20.0, 100.0, 0.0, 0.5, 5.0, 1.0)
+    no_boot = pd.DataFrame(columns=["boot_x", "mean", "std", "boot_cv"])
+
+    calc.build_plots("P", x, y, model_results, no_boot, 5, 2.0, 0.2, str(tmp_path),
+                     c_high=400.0 if expect_entry else np.inf, ULOQ=uloq)
+
+    assert any(label.startswith("LOD") for label in labels)
+    assert any(label.startswith("LOQ") for label in labels)
+    assert any(label.startswith("ULOQ") for label in labels) == expect_entry, labels
