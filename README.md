@@ -70,11 +70,22 @@ distinct concentration levels the peptide was fit over, which separates a
 genuine "no saturation" result from a curve that had too few levels for the
 `auto` model to look for one. Rows are written incrementally as each peptide
 finishes, so partial results survive an interrupted run. A peptide whose fit
-fails is never dropped: it still gets a row with non-finite figures of merit
-and the error message recorded in the `notes` column. The `notes` column also records
-the LOQ outcome when it is not an ordinary interpolated crossing: `loq_no_crossing` (the
-CV never fell below the threshold) or `loq_at_lod` (quantifiable down to the detection
-limit, so the LLOQ equals the LOD).
+fails is never dropped: it still gets a row with non-finite figures of merit.
+The `notes` column is empty for an ordinary fit. Otherwise it holds one of these
+codes:
+
+  | Code | Meaning |
+  |------|---------|
+  | `loq_no_crossing` | The CV never fell below the threshold, so there is no LOQ. |
+  | `loq_at_lod` | Quantifiable down to the detection limit, so the LLOQ equals the LOD. |
+  | `below_min_detections` | Reported at fewer than `--min_detections` levels; limits are non-finite. |
+  | `no_usable_points` | No finite curve point, e.g. the peptide had no entry in `--multiplier_file`. |
+  | `fit_underdetermined` | Too few points for the number of model parameters. |
+  | `fit_singular` | The least-squares solve failed (linear-algebra error). |
+  | `fit_error: <detail>` | Any other fit failure, with a shortened exception message. |
+
+  The code is always the text before the first colon. The full error message for a
+  failed fit is written to stderr.
 
 - `*.png` – (optional) plots of each peptide calibration curve with the
 fitted piecewise linear regression.

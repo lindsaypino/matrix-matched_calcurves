@@ -2,6 +2,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
 import pandas as pd
 import os
+import re
 import sys
 import traceback
 import numpy as np
@@ -865,18 +866,50 @@ FOM_COLUMNS = ['peptide', 'LOD', 'LOQ', 'ULOQ', 'slope_linear', 'intercept_linea
                'intercept_noise', 'stndev_noise', 'n_curvepoints', 'notes']
 
 
+class NoUsablePointsError(ValueError):
+    """The peptide has no finite curve point, so there is nothing to fit."""
+
+
+# Fit failures written to the 'notes' column as short, stable codes (issue #24), so
+# the column can be filtered on without depending on scipy/lmfit message wording.
+# Each rule is (exception type, regex on the message or None, code); first match wins.
+_FAILURE_CODES = [
+    (NoUsablePointsError, None, 'no_usable_points'),
+    # scipy.optimize.leastsq: fewer residuals than free parameters
+    (TypeError, r'^Improper input: func input vector length', 'fit_underdetermined'),
+    # any linear-algebra failure inside the least-squares solve, e.g. "SVD did not converge"
+    (np.linalg.LinAlgError, None, 'fit_singular'),
+]
+# An unmapped failure is written as 'fit_error: <ExceptionType>: <message>', truncated
+# to this many characters. The code is always the text before the first colon.
+NOTE_MAX_CHARS = 300
+
+
+def failure_note(exc):
+    """Return the 'notes' value for a peptide whose fit raised exc."""
+    message = str(exc)
+    for exc_type, pattern, code in _FAILURE_CODES:
+        if isinstance(exc, exc_type) and (pattern is None or re.search(pattern, message)):
+            return code
+    detail = '%s: %s' % (type(exc).__name__, message)
+    # keep the CSV field one line, with no commas
+    detail = detail.replace('\r', ' ').replace('\n', ' ').replace(',', ';')
+    return ('fit_error: ' + detail)[:NOTE_MAX_CHARS]
+
+
 def process_peptide(*args):
     """Wrapper around the per-peptide fit that never drops a peptide: if the fit or
     bootstrap raises, the peptide still gets an output row with non-finite figures of
-    merit and the error recorded in the 'notes' column, instead of being silently
-    skipped. peptide is the 4th positional argument (see _process_peptide_core)."""
+    merit and a failure code in the 'notes' column (see failure_note), instead of being
+    silently skipped. peptide is the 4th positional argument (see _process_peptide_core)."""
     peptide = args[3]
     try:
         return _process_peptide_core(*args)
     except Exception as exc:
-        note = ('%s: %s' % (type(exc).__name__, exc)).replace('\n', ' ').replace('\r', ' ')
-        note = note.replace(',', ';')[:300]  # keep the CSV row single-field and one line
-        sys.stderr.write('WARNING: peptide %s failed to fit; recorded with note: %s\n' % (peptide, note))
+        note = failure_note(exc)
+        # the full, untruncated message goes to stderr; the CSV gets the code
+        sys.stderr.write('WARNING: peptide %s failed to fit (%s): %s: %s\n'
+                         % (peptide, note.split(':')[0], type(exc).__name__, exc))
         # the level count describes the input, not the fit, so it is most useful
         # precisely on the rows where the fit failed; args[9] is subset
         try:
@@ -894,8 +927,8 @@ def _process_peptide_core(bootreps, cv_thresh, output_dir, peptide, plot_or_not,
     # NaN (see associate_multiplier). Say that in the notes column rather than letting
     # lmfit fail later with an opaque LinAlgError.
     if not np.isfinite(np.asarray(subset['curvepoint'], dtype=float)).any():
-        raise ValueError('no usable curve points (all NaN); if --multiplier_file was '
-                         'used this peptide had no multiplier')
+        raise NoUsablePointsError('no usable curve points (all NaN); if --multiplier_file '
+                                  'was used this peptide had no multiplier')
 
     # sort the dataframe with x values in strictly ascending order. Sort on the same
     # canonical keys read_input used: this is the order the bootstrap resamples by
@@ -1106,9 +1139,8 @@ def main():
                 min_detections)
 
     def note_row(peptide, exc):
-        # never drop a peptide: emit a row with non-finite FOMs and the error note
-        note = ('%s: %s' % (type(exc).__name__, exc)).replace('\n', ' ').replace('\r', ' ')
-        note = note.replace(',', ';')[:300]
+        # never drop a peptide: emit a row with non-finite FOMs and the failure note
+        note = failure_note(exc)
         # n_curvepoints is left blank here: this path handles a worker that died
         # without returning, so the peptide's data is not in hand to count levels
         return pd.DataFrame([[peptide, np.inf, np.inf, np.inf, np.nan, np.nan, np.nan, np.nan,
