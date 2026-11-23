@@ -183,8 +183,8 @@ def read_input(filename, col_conc_map_file):
         sys.stdout.write('Input assumed to be EncyclopeDIA *.elib.peptides.txt filetype.\n')
 
         df = pd.read_csv(filename, sep=None, engine='python')
-        df.drop(['numFragments', 'Protein'], axis="columns", inplace=True)  # make a quantitative df with just curve points and peptides
-        df.rename(columns={'Peptide': 'peptide'}, inplace=True)
+        df = df.drop(['numFragments', 'Protein'], axis="columns")  # make a quantitative df with just curve points and peptides
+        df = df.rename(columns={'Peptide': 'peptide'})
 
         df_long = pd.melt(df, id_vars=['peptide'], var_name='filename', value_name='area')
 
@@ -196,9 +196,9 @@ def read_input(filename, col_conc_map_file):
         df_long = pd.read_csv(filename)
 
         # clean up column names to match downstream convention
-        df_long.rename(columns={'File Name': 'filename',
-                                'Total Area Fragment': 'area',
-                                'Peptide Sequence': 'peptide'}, inplace=True)
+        df_long = df_long.rename(columns={'File Name': 'filename',
+                                          'Total Area Fragment': 'area',
+                                          'Peptide Sequence': 'peptide'})
         df_long = df_long[['peptide', 'filename', 'area']]
 
     # If dia-nn *.pr_matrix.tsv input file, supply warning about normalizations
@@ -241,9 +241,9 @@ def read_input(filename, col_conc_map_file):
         df_long = df_long[['Precursor.Id', 'File.Name', 'Precursor.Quantity']]
 
         # Clean up the column names to match downstream convention
-        df_long.rename(columns={'File.Name': 'filename',
-                    'Precursor.Id': 'peptide',
-                    'Precursor.Quantity': 'area'}, inplace=True)
+        df_long = df_long.rename(columns={'File.Name': 'filename',
+                                          'Precursor.Id': 'peptide',
+                                          'Precursor.Quantity': 'area'})
 
         # remove colons in Unimod description, e.g. "AAVDC(UniMod:4)EC(UniMod:4)EFQNLEHNEK.png"
         df_long['peptide'] = df_long['peptide'].str.replace(':', '')
@@ -259,13 +259,13 @@ def read_input(filename, col_conc_map_file):
         df['Modified.Sequence'] = df['EG.PrecursorId'].str.split(".", expand=True)[0].str.strip("_")
         df['peptide'] = df['Modified.Sequence'] + "_" + df['Precursor.Charge']
 
-        df.drop(["PG.ProteinGroups",
-                 "PG.Organisms",
-                 "PG.ProteinNames",
-                 "PEP.StrippedSequence",
-                 "PEP.PeptidePosition",
-                 "EG.PrecursorId",
-                 "EG.ModifiedSequence"], axis="columns", inplace=True)  # make a quantitative df with just curve points and peptides
+        df = df.drop(["PG.ProteinGroups",
+                      "PG.Organisms",
+                      "PG.ProteinNames",
+                      "PEP.StrippedSequence",
+                      "PEP.PeptidePosition",
+                      "EG.PrecursorId",
+                      "EG.ModifiedSequence"], axis="columns")  # make a quantitative df with just curve points and peptides
 
         df_long = pd.melt(df, id_vars=['peptide'], var_name='filename', value_name='area')
 
