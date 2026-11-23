@@ -1,0 +1,38 @@
+# Run the test suite on every pull request and on every push to master.
+# Windows is in the matrix on purpose: issue #27 (cp1252 decode of subprocess
+# output) failed only there. requirements.txt is unpinned, so each run gets the
+# newest pandas/numpy/lmfit and a new release can fail a run that changed nothing.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pytest pytest-benchmark
+      - name: Run tests
+        run: python -m pytest tests -q --benchmark-disable
+        env:
+          PYTHONIOENCODING: utf-8
+          MPLBACKEND: Agg
