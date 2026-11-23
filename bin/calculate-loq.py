@@ -1016,8 +1016,9 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument('curve_data', type=str,
-                        help='a matrix containing peptides and their quantitative values across each curve point (currently\
-                                supporting Encyclopedia *.elib.peptides.txt quant reports and Skyline export reports)')
+                        help='peptide quantities across the curve points; the filetype is detected from the header \
+                                (EncyclopeDIA *.elib.peptides.txt, Skyline export, DIA-NN diann_report.tsv or \
+                                *.pr_matrix.tsv, or Spectronaut output)')
     parser.add_argument('filename_concentration_map', type=str,
                         help='a comma-delimited file containing maps between filenames and the concentration point \
                                 they represent (two columns named "filename" and "concentration")')
