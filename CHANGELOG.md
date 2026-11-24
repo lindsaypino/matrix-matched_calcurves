@@ -28,6 +28,14 @@ was actually reported at fewer than that many distinct dilution levels.
   inputs (EncyclopeDIA integrates the window at every run, so every level is reported)
   never trip the gate. Set `--min_detections 0` to disable.
 
+### Fixed — pandas `inplace=` deprecation in the input reader
+
+pandas 3.1 deprecates the `inplace` keyword (PDEP-8), and pandas 4 will remove it.
+`read_input` now assigns the result of `drop` and `rename` back instead of using
+`inplace=True`, in the EncyclopeDIA, Skyline, DIA-NN report and Spectronaut branches.
+Output is unchanged; the golden characterization test still passes. The frozen 2021
+script is left as it is.
+
 ### Changed — LOQ readout (matrix-matched_calcurves#21)
 
 How `calculate_loq` reads the LOQ off the bootstrap CV curve was rewritten. LOD and ULOQ
