@@ -53,10 +53,15 @@ NUMERIC_COLS = [
     "stndev_noise",
 ]
 
-# Relative tolerance for float comparison. The tool seeds numpy/random at
-# import, so runs on the same code are exact; the tolerance guards only against
-# platform-level floating point noise.
-RTOL = 1e-6
+# Relative tolerance for float comparison. Runs on the same machine are exact
+# (each bootstrap replicate has its own SeedSequence), but the fit is not exact
+# across platforms. The golden file was made on Windows; on Ubuntu in CI
+# (identical numpy/scipy/pandas/lmfit versions) RGEGFMVVTATGDNTFVGR moved by about
+# 1.4e-4 relative in LOD, slope and intercept, and other peptides by less. 1e-3
+# leaves room for that while still failing on a real method change (the #21 LOQ
+# readout change moved LOQs by ~15%). Exactness between code paths on one machine
+# is tested in test_issues.py.
+RTOL = 1e-3
 ATOL = 0.0
 
 
