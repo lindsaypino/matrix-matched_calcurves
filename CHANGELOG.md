@@ -28,6 +28,14 @@ was actually reported at fewer than that many distinct dilution levels.
   inputs (EncyclopeDIA integrates the window at every run, so every level is reported)
   never trip the gate. Set `--min_detections 0` to disable.
 
+### Removed — `loq_by_cv.py` retired to `legacy/`
+
+`bin/loq_by_cv.py` (LOQ as the lowest curve point with a per-level CV of 20% or less)
+moved to `legacy/loq_by_cv.py`. Its method work ended in 2019, nothing in the repository
+called it, and it had no tests; `bin/calculate-loq.py` supersedes it.
+[`legacy/README.md`](legacy/README.md) records what it did, why it was retired, and its
+state when retired. The script itself is unchanged.
+
 ### Fixed — Spectronaut reader; round-trip tests for three readers
 
 `tests/test_readers.py` writes `data/one_protein.csv` as a Skyline export, a DIA-NN

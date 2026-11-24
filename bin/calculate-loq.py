@@ -41,7 +41,7 @@ except OSError:
 # independent SeedSequence for thread-safe, reproducible resampling.
 # Note: std_noise in calculate_lod uses ddof=1 (sample std, Bessel-corrected).
 # np.std() defaults to ddof=0; ddof=1 is analytically correct for estimating
-# a population noise parameter from a small sample (consistent with loq_by_cv.py).
+# a population noise parameter from a small sample (consistent with legacy/loq_by_cv.py).
 
 # Force warnings (other than FutureWarning) to kill the script; this allows debugging numpy warnings.
 #import warnings
