@@ -5,43 +5,8 @@ settled decisions recorded so they are not reopened.
 
 ## Decide whether the `notes` column stays in figuresofmerit.csv
 
-Still open. Related: matrix-matched_calcurves#24 (map the notes to short stable codes).
-
-Added by `2205392` ("Never drop a peptide: record fit failures as noted rows"), which
-changed the output schema from
-
-```
-peptide,LOD,LOQ,ULOQ,slope_linear,intercept_linear,intercept_noise,stndev_noise
-```
-
-to that plus `n_curvepoints` and `notes`.
-
-The question is whether `notes` earns its place in the output, or whether the
-never-drop-a-peptide guarantee is better expressed some other way (a sentinel in an
-existing column, a separate sidecar file, a log line). Worth deciding before the
-schema is baked into published supplemental tables.
-
-Things to weigh:
-
-- **What actually goes in it.** When this was first written the column held only fit
-  errors, and on the two EncyclopeDIA datasets re-run on 2026-08-12 (Exploris 62,760
-  peptides; IL15 539) it was empty for every row. #23 and #25 have since added the
-  outcome codes `loq_no_crossing`, `loq_at_lod` and `below_min_detections`, so it is no
-  longer only a failure field. How often those codes appear on the paper datasets has
-  not been re-measured.
-- **It is partly a free-text column in a numeric table.** The outcome codes are a
-  closed vocabulary, but fit failures are still written as the raw exception message
-  (commas replaced with semicolons, truncated to 300 characters). #24 would replace
-  those with codes too.
-- **Downstream readers.** `2026_calcurve_paper` reads these CSVs with
-  `pandas.read_csv` by column name, so extra columns are harmless there — but the
-  manuscript ships these files as supplemental tables, where every code in the column
-  needs a definition a reviewer can find.
-- **`n_curvepoints` is a separate call.** It arrived in the same schema change but is
-  a populated numeric field, so it stands on its own merits.
-
-Raised while regenerating the paper's figures of merit; see
-`2026_calcurve_paper/docs/fom_provenance.md` for the run that surfaced it.
+Moved to matrix-matched_calcurves#38. Since #24 the column holds a closed set of codes,
+plus `fit_error: <detail>` for any other fit failure; the README lists them.
 
 ## Settled: how the LOQ is read off the CV curve
 
@@ -85,7 +50,7 @@ Things to weigh:
 - **This changes published numbers.** Both the values and, for some peptides, whether
   an LOQ is reported at all.
 - **An explicit outcome is a schema question**, and overlaps the `notes` decision
-  above -- "no crossing in range" needs somewhere to live.
+  (#38) -- "no crossing in range" needs somewhere to live.
 - **Even the best combination is not accurate.** Log spacing plus interpolation plus
   an explicit outcome still leaves the LOQ biased about +50% high with an
   interquartile range near 100% of its own value across replicate experiments. These
