@@ -65,6 +65,16 @@ are untouched.
   LOQ now correctly report none. The golden characterization snapshot was regenerated to
   re-pin this behaviour.
 
+### Changed — fit failures in `notes` are stable codes (matrix-matched_calcurves#24)
+
+A failed fit used to write the raw exception message to `notes`, so the text changed
+with scipy and lmfit versions. Known failures now get a short code: `no_usable_points`,
+`fit_underdetermined` (too few points for the model) and `fit_singular` (a
+linear-algebra error in the solve). Any other failure is written as
+`fit_error: <ExceptionType>: <message>`, truncated to 300 characters. The full message
+still goes to stderr. Figures of merit are unchanged; only the `notes` text of failed
+peptides changes.
+
 ## Method changes from the Pino 2020 baseline
 
 Verified against the frozen script. `doc/BENCHMARK.md` and the frozen script are the
@@ -91,6 +101,6 @@ handling, piecewise edge cases, refactors) are in the git history.
   dense) and sorts rows canonically by `(curvepoint, area)` so the LOQ no longer depends
   on the order the reader emitted rows.
 - **Output schema.** The current `figuresofmerit.csv` adds `n_curvepoints` and a `notes`
-  column (fit errors and the LOQ-outcome tags above), writes rows incrementally, and
+  column (fit-failure and LOQ-outcome codes, see above), writes rows incrementally, and
   keeps a row with non-finite figures of merit for a peptide whose fit fails. The 2020
   output had neither column.

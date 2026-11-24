@@ -43,6 +43,10 @@ which uses a platform tolerance.
 - Issue #20: a bootstrap that draws from one global RNG makes a peptide's LOQ depend
   on how many peptides ran before it. Running a subset must give the same figures of
   merit for the shared peptides as running the full file.
+
+- Issue #24: fit failures were written to 'notes' as the raw exception message, which
+  drifts with scipy/lmfit wording. Known failures now map to short stable codes, and
+  anything else to 'fit_error: <detail>'.
 """
 
 import importlib
@@ -433,9 +437,9 @@ def test_missing_multiplier_keeps_the_peptide(tmp_path):
         row = fom[fom["peptide"] == peptide]
         assert len(row) == 1, f"{peptide} missing from figuresofmerit.csv"
         assert not np.isfinite(row.iloc[0]["LOD"])
-        assert "multiplier" in str(row.iloc[0]["notes"]), (
-            f"{peptide} note should explain the missing multiplier, got: "
-            f"{row.iloc[0]['notes']}"
+        # the stderr warning explains the missing multiplier; the CSV carries the code
+        assert row.iloc[0]["notes"] == "no_usable_points", (
+            f"{peptide} note should be no_usable_points, got: {row.iloc[0]['notes']}"
         )
 
 
@@ -478,3 +482,39 @@ def test_plot_legend_lists_uloq(calc, tmp_path, monkeypatch, uloq, expect_entry)
     assert any(label.startswith("LOD") for label in labels)
     assert any(label.startswith("LOQ") for label in labels)
     assert any(label.startswith("ULOQ") for label in labels) == expect_entry, labels
+
+
+# --- Issue #24: fit failures as stable note codes ---------------------------------
+@pytest.mark.parametrize("make_exc, expected", [
+    (lambda c: c.NoUsablePointsError("no usable curve points"), "no_usable_points"),
+    (lambda c: TypeError("Improper input: func input vector length N=3 must not exceed "
+                         "func output vector length M=2"), "fit_underdetermined"),
+    (lambda c: np.linalg.LinAlgError("SVD did not converge in Linear Least Squares"),
+     "fit_singular"),
+])
+def test_known_failures_map_to_codes(calc, make_exc, expected):
+    assert calc.failure_note(make_exc(calc)) == expected
+
+
+def test_unmapped_failure_keeps_a_one_line_detail(calc):
+    """Unmapped failures fall back to fit_error with a CSV-safe, truncated detail."""
+    note = calc.failure_note(ValueError("bad, very bad\nsecond line " + "x" * 500))
+    assert note.startswith("fit_error: ValueError: bad; very bad second line")
+    assert "," not in note and "\n" not in note
+    assert len(note) == calc.NOTE_MAX_CHARS
+    assert note.split(":")[0] == "fit_error"
+
+    # a TypeError that is not scipy's 'Improper input' is not underdetermined
+    assert calc.failure_note(TypeError("unsupported operand")).startswith("fit_error: ")
+
+
+def test_too_few_points_is_noted_underdetermined(calc):
+    """A real two-point peptide trips scipy's 'Improper input' check; the rule must
+    match the message scipy actually raises, not only the one quoted in the issue."""
+    subset = pd.DataFrame({"peptide": "P", "curvepoint": [0.1, 1.0],
+                           "area": [10.0, 100.0], "n_detected": 2})
+    row = calc.process_peptide(20, 0.2, None, "P", "n", 2.0,
+                               calc.DEFAULT_MIN_NOISE_POINTS, calc.DEFAULT_MIN_LINEAR_POINTS,
+                               calc.DEFAULT_MIN_SATURATION_POINTS, subset, "n", "auto")
+    assert row.iloc[0]["notes"] == "fit_underdetermined"
+    assert not np.isfinite(row.iloc[0]["LOD"])
