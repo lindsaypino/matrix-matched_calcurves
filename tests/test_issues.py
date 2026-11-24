@@ -1,11 +1,16 @@
 """
 Regression tests for specific reported issues in calculate-loq.py.
 
+The comparisons between two code paths here are exact (rtol=1e-9) and run both
+paths on the same machine. The fit is not bit-identical across platforms, so
+comparison with the committed golden snapshot is left to test_characterization.py,
+which uses a platform tolerance.
+
 - Issue #11: a worker crash surfaced only as an opaque BrokenProcessPool and
   produced near-empty output. The tool now supports a serial mode
   (``--n_threads 1``) and falls back to serial on BrokenProcessPool. Here we
-  test that serial mode runs and produces output identical to the parallel
-  golden snapshot (bootstrap replicates are seeded per-index, so serial and
+  test that serial mode runs and produces output identical to a parallel run on
+  the same machine (bootstrap replicates are seeded per-index, so serial and
   parallel are numerically identical).
 
 - Issue #12: warn when the filename/concentration map is blank or has
@@ -24,8 +29,8 @@ Regression tests for specific reported issues in calculate-loq.py.
   dense grid in canonical (curvepoint, area) order.
 
 - Issue #19: round trip on real data. data/one_protein.csv re-expressed as a ragged
-  DIA-NN report.tsv must read back to the same frame as the wide file and reproduce
-  the golden figures of merit.
+  DIA-NN report.tsv must read back to the same frame as the wide file and give the
+  same figures of merit as the wide file.
 
 - --model piecewise discarded its own LOD edge cases, returning the raw LOD where
   the 2021 original returns the edge-case-corrected result. It exists to reproduce
@@ -56,7 +61,6 @@ REPO = os.path.dirname(HERE)
 SCRIPT = os.path.join(REPO, "bin", "calculate-loq.py")
 CURVE_DATA = os.path.join(REPO, "data", "one_protein.csv")
 CONC_MAP = os.path.join(REPO, "data", "filename2samplegroup_map.csv")
-GOLDEN = os.path.join(HERE, "data", "golden_figuresofmerit.csv")
 
 NUMERIC_COLS = [
     "LOD", "LOQ", "slope_linear", "intercept_linear", "intercept_noise", "stndev_noise",
@@ -79,21 +83,24 @@ def _run(args, output_dir):
 
 
 # --- Issue #11: serial mode ---------------------------------------------------
-def test_serial_mode_matches_parallel_golden(tmp_path):
-    """--n_threads 1 runs in-process and yields the same numbers as the golden."""
-    proc = _run({"extra": ["--n_threads", "1"]}, tmp_path)
-    assert proc.returncode == 0, f"serial run failed:\n{proc.stderr}"
+def test_serial_mode_matches_parallel_run(tmp_path):
+    """--n_threads 1 runs in-process and yields the same numbers as a parallel run."""
+    def run(n_threads, out):
+        out.mkdir()
+        proc = _run({"extra": ["--n_threads", n_threads]}, out)
+        assert proc.returncode == 0, f"--n_threads {n_threads} run failed:\n{proc.stderr}"
+        fom = pd.read_csv(os.path.join(str(out), "figuresofmerit.csv"))
+        return fom.sort_values("peptide").reset_index(drop=True)
 
-    actual = pd.read_csv(os.path.join(str(tmp_path), "figuresofmerit.csv"))
-    actual = actual.sort_values("peptide").reset_index(drop=True)
-    golden = pd.read_csv(GOLDEN).sort_values("peptide").reset_index(drop=True)
+    serial = run("1", tmp_path / "serial")
+    parallel = run("2", tmp_path / "parallel")  # 2, not the default: force a process pool
 
-    assert list(actual["peptide"]) == list(golden["peptide"])
+    assert list(serial["peptide"]) == list(parallel["peptide"])
     for col in NUMERIC_COLS:
-        a = actual[col].to_numpy(dtype=float)
-        g = golden[col].to_numpy(dtype=float)
-        assert np.allclose(a, g, rtol=1e-9, atol=0.0, equal_nan=True), (
-            f"serial output for {col} differs from golden"
+        a = serial[col].to_numpy(dtype=float)
+        p = parallel[col].to_numpy(dtype=float)
+        assert np.allclose(a, p, rtol=1e-9, atol=0.0, equal_nan=True), (
+            f"serial output for {col} differs from the parallel run"
         )
 
 
@@ -273,31 +280,33 @@ def test_ragged_report_reads_back_to_the_wide_frame(calc, tmp_path):
     pd.testing.assert_frame_equal(ragged, wide, check_exact=True)
 
 
-def test_ragged_report_reproduces_golden(tmp_path):
-    """End to end: the ragged report reproduces the golden figures of merit."""
+def test_ragged_report_matches_wide_run(tmp_path):
+    """End to end: the ragged report gives the same figures of merit as the wide
+    file it was made from, run on the same machine."""
     report = tmp_path / "diann_report.tsv"
     _write_ragged_report(report)
 
-    out = tmp_path / "out"
-    out.mkdir()
-    cmd = [sys.executable, SCRIPT, str(report), CONC_MAP,
-           "--output_path", str(out), "--plot", "n", "--bootreps", "100"]
-    proc = subprocess.run(cmd, cwd=REPO, capture_output=True,
-                          encoding="utf-8", errors="replace")
-    assert proc.returncode == 0, proc.stderr
+    def run(curve_data, out):
+        out.mkdir()
+        cmd = [sys.executable, SCRIPT, str(curve_data), CONC_MAP,
+               "--output_path", str(out), "--plot", "n", "--bootreps", "100"]
+        proc = subprocess.run(cmd, cwd=REPO, capture_output=True,
+                              encoding="utf-8", errors="replace")
+        assert proc.returncode == 0, proc.stderr
+        fom = pd.read_csv(os.path.join(str(out), "figuresofmerit.csv"))
+        return fom.sort_values("peptide").reset_index(drop=True)
 
-    actual = pd.read_csv(os.path.join(str(out), "figuresofmerit.csv"))
-    actual = actual.sort_values("peptide").reset_index(drop=True)
-    golden = pd.read_csv(GOLDEN).sort_values("peptide").reset_index(drop=True)
+    ragged = run(report, tmp_path / "ragged")
+    wide = run(CURVE_DATA, tmp_path / "wide")
 
-    assert list(actual["peptide"]) == list(golden["peptide"])
+    assert list(ragged["peptide"]) == list(wide["peptide"])
     for col in NUMERIC_COLS + ["ULOQ", "n_curvepoints"]:
-        a = actual[col].to_numpy(dtype=float)
-        g = golden[col].to_numpy(dtype=float)
-        assert np.allclose(a, g, rtol=1e-9, atol=0.0, equal_nan=True), (
-            f"round-trip output for {col} differs from golden"
+        a = ragged[col].to_numpy(dtype=float)
+        w = wide[col].to_numpy(dtype=float)
+        assert np.allclose(a, w, rtol=1e-9, atol=0.0, equal_nan=True), (
+            f"round-trip output for {col} differs from the wide-file run"
         )
-    assert list(actual["notes"].fillna("")) == list(golden["notes"].fillna(""))
+    assert list(ragged["notes"].fillna("")) == list(wide["notes"].fillna(""))
 
 
 def test_figures_of_merit_are_row_order_independent(calc):
