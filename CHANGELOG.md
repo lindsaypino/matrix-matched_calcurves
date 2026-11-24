@@ -28,6 +28,20 @@ was actually reported at fewer than that many distinct dilution levels.
   inputs (EncyclopeDIA integrates the window at every run, so every level is reported)
   never trip the gate. Set `--min_detections 0` to disable.
 
+### Fixed — Spectronaut reader; round-trip tests for three readers
+
+`tests/test_readers.py` writes `data/one_protein.csv` as a Skyline export, a DIA-NN
+`*.pr_matrix.tsv` and a Spectronaut report, and checks that each reads back to the frame
+the EncyclopeDIA file gives. The Skyline and `pr_matrix` readers passed as they were. The
+Spectronaut reader had two defects:
+
+- `EG.PrecursorId` (`_SEQUENCE_.charge`) was split at the first dot, so a modification
+  written as a mass (`C[+57.0214635]`) gave a broken peptide name. It is now split at the
+  last dot. Spectronaut normally writes modifications by name, which has no dot.
+- Two helper columns went into the melt as if they were runs. The concentration map
+  removed those rows, but `area` came back as `object`, not `float64`. On the sample data
+  every figure of merit and note was the same as the EncyclopeDIA run all the same.
+
 ### Fixed — pandas `inplace=` deprecation in the input reader
 
 pandas 3.1 deprecates the `inplace` keyword (PDEP-8), and pandas 4 will remove it.
