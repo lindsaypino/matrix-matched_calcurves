@@ -255,10 +255,11 @@ def read_input(filename, col_conc_map_file):
 
         df = pd.read_table(filename, sep=None, engine='python')
 
-        # create unique precursor entries so precursors aren't double-counted for curve fitting
-        df['Precursor.Charge'] = df['EG.PrecursorId'].str.split(".", expand=True)[1]
-        df['Modified.Sequence'] = df['EG.PrecursorId'].str.split(".", expand=True)[0].str.strip("_")
-        df['peptide'] = df['Modified.Sequence'] + "_" + df['Precursor.Charge']
+        # create unique precursor entries so precursors aren't double-counted for curve fitting.
+        # EG.PrecursorId is "_SEQUENCE_.charge"; split at the LAST dot, because a
+        # modification written as a mass (C[+57.0214635]) has a dot of its own
+        precursor = df['EG.PrecursorId'].str.rsplit(".", n=1, expand=True)
+        df['peptide'] = precursor[0].str.strip("_") + "_" + precursor[1]
 
         df = df.drop(["PG.ProteinGroups",
                       "PG.Organisms",
