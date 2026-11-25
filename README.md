@@ -71,11 +71,12 @@ genuine "no saturation" result from a curve that had too few levels for the
 `auto` model to look for one. Rows are written incrementally as each peptide
 finishes, so partial results survive an interrupted run. A peptide whose fit
 fails is never dropped: it still gets a row with non-finite figures of merit.
-The `notes` column is empty for an ordinary fit. Otherwise it holds one of these
-codes:
+The `notes` column is empty when the LOD and LOQ are both finite. Otherwise it
+holds one of these codes, so every non-finite LOQ has a reason:
 
   | Code | Meaning |
   |------|---------|
+  | `no_lod` | The fit found no LOD, so there is no range to read an LOQ from. |
   | `loq_no_crossing` | The CV never fell below the threshold, so there is no LOQ. |
   | `loq_at_lod` | Quantifiable down to the detection limit, so the LLOQ equals the LOD. |
   | `below_min_detections` | Reported at fewer than `--min_detections` levels; limits are non-finite. |
@@ -84,8 +85,11 @@ codes:
   | `fit_singular` | The least-squares solve failed (linear-algebra error). |
   | `fit_error: <detail>` | Any other fit failure, with a shortened exception message. |
 
-  The code is always the text before the first colon. The full error message for a
-  failed fit is written to stderr.
+  A row has at most one code. For a fit that completes, the code comes from the
+  first step that stops: the detection gate (`below_min_detections`), then the LOD
+  (`no_lod`), then the LOQ readout (`loq_no_crossing`, `loq_at_lod`). The code is
+  always the text before the first colon. The full error message for a failed fit is
+  written to stderr.
 
 - `*.png` – (optional) plots of each peptide calibration curve with the
 fitted piecewise linear regression.
@@ -106,7 +110,7 @@ in the noise segment and in the saturation plateau.
 | **Formula** | `LOD = (b_noise + 2*s_noise - b_lin) / m_lin` | `LLOQ = x*` where `CV(x*) = 0.20`, interpolated between the grid points bracketing the crossing (in log-`x` for a log-spaced design, linear-`x` for a linear one); `CV(x) = std/mean` of the 100 bootstrap fits at `x` | `ULOQ = (c_high - 2*s_sat - b_lin) / m_lin` |
 | **Where it is measured** | The intersection of the noise and linear segments | A 100-point grid from the LOD up to `min(ULOQ, max curvepoint)` — geometric spacing for a log-spaced dilution design, uniform for a linear one (auto-detected) | The saturation onset, `(c_high - b_lin) / m_lin`, backed off by the plateau noise |
 | **Data support necessary** | At least 2 distinct curve points below the LOD, and at least 1 at or above it | A non-empty bootstrap summary, and a CV that falls below the threshold somewhere above the LOD | A trilinear fit selected by AIC, and at least 2 distinct curve points in the plateau |
-| **Reported as non-finite when** | `m_lin <= 0` (noise only), or a support rule above fails | The CV stays above the threshold across the whole range (noted `loq_no_crossing`); or the LOD is non-finite. When the CV is already below threshold at the LOD, the LLOQ is reported as the LOD (noted `loq_at_lod`) | The fit is bilinear (`c_high` is infinite); too few plateau points; `ULOQ <= 0`; or `ULOQ <= LOD` |
+| **Reported as non-finite when** | `m_lin <= 0` (noise only), or a support rule above fails | The CV stays above the threshold across the whole range (noted `loq_no_crossing`); or the LOD is non-finite (noted `no_lod`). When the CV is already below threshold at the LOD, the LLOQ is reported as the LOD (noted `loq_at_lod`) | The fit is bilinear (`c_high` is infinite); too few plateau points; `ULOQ <= 0`; or `ULOQ <= LOD` |
 | **Code** | `calculate_lod` | `calculate_loq` | `calculate_uloq` |
 
 Two notes about the defaults:

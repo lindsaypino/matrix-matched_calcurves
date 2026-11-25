@@ -991,7 +991,10 @@ def _process_peptide_core(bootreps, cv_thresh, output_dir, peptide, plot_or_not,
         loq_note = 'below_min_detections'
         bootstrap_df = bootstrap_many(subset, [np.nan], num_bootreps=0)  # empty DF; no bootstrap
     elif not np.isfinite(LOD):
+        # no LOD, so there is no range to read an LOQ from; say so in 'notes' so that
+        # every non-finite LOQ carries a reason (issue #38)
         LOQ = np.inf
+        loq_note = 'no_lod'
         bootstrap_df = bootstrap_many(subset, [np.nan], num_bootreps=0)  # shortcut to get empty DF
     else:
         # calculate coefficients of variation for discrete bins over the quantifiable
@@ -1032,7 +1035,9 @@ def _process_peptide_core(bootreps, cv_thresh, output_dir, peptide, plot_or_not,
         except ValueError:
             sys.stderr.write('ERROR! Issue with peptide %s. \n' % peptide)
 
-    # make a dataframe row with the peptide and its figures of merit ('' note = fit OK)
+    # make a dataframe row with the peptide and its figures of merit. The note is set by
+    # exactly one branch above, in this order: gate, then LOD, then LOQ readout. '' means
+    # finite LOD and LOQ.
     new_row = [peptide, LOD, LOQ, ULOQ, slope_linear, intercept_linear, intercept_noise, std_noise,
                len(np.unique(x)), loq_note]
     new_df_row = pd.DataFrame([new_row], columns=FOM_COLUMNS)
