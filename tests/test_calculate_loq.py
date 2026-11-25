@@ -58,7 +58,7 @@ def bench_process_nonquant_peptide(calculate_loq, subset):
     # and the exception in 'notes', which would pass the LOD check below. Require a
     # real fit first (this is how the 8-argument call stayed hidden, issue #17).
     note = result_row.iloc[0]["notes"]
-    assert note in ("", "below_min_detections"), f"process_peptide failed: {note}"
+    assert note in ("no_lod", "below_min_detections"), f"process_peptide failed: {note}"
     assert np.isinf(result_row.iloc[0]["LOD"]), "Got LOD for non-quantitative peptide!!"
 
 

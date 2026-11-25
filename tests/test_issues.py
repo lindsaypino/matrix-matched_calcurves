@@ -47,6 +47,10 @@ which uses a platform tolerance.
 - Issue #24: fit failures were written to 'notes' as the raw exception message, which
   drifts with scipy/lmfit wording. Known failures now map to short stable codes, and
   anything else to 'fit_error: <detail>'.
+
+- Issue #38: a peptide with no LOD got LOQ = inf and an empty note, so an empty note
+  did not mean the fit had finite limits. It is now noted 'no_lod', and an empty note
+  means a finite LOD and LOQ.
 """
 
 import importlib
@@ -518,3 +522,33 @@ def test_too_few_points_is_noted_underdetermined(calc):
                                calc.DEFAULT_MIN_SATURATION_POINTS, subset, "n", "auto")
     assert row.iloc[0]["notes"] == "fit_underdetermined"
     assert not np.isfinite(row.iloc[0]["LOD"])
+
+
+# --- Issue #38: every non-finite LOQ carries a reason ------------------------------
+def test_peptide_without_lod_is_noted_no_lod(calc):
+    """A fit that finds no LOD has no range to read an LOQ from; notes says so."""
+    df = calc.read_input(CURVE_DATA, CONC_MAP)
+    subset = df[df["peptide"] == "YGLNQMADEKESLVVK"]  # the sample peptide with no LOD
+    row = calc.process_peptide(100, 0.2, None, "YGLNQMADEKESLVVK", "n", 2.0,
+                               calc.DEFAULT_MIN_NOISE_POINTS, calc.DEFAULT_MIN_LINEAR_POINTS,
+                               calc.DEFAULT_MIN_SATURATION_POINTS, subset, "n", "auto")
+    assert not np.isfinite(row.iloc[0]["LOD"])
+    assert not np.isfinite(row.iloc[0]["LOQ"])
+    assert row.iloc[0]["notes"] == "no_lod"
+
+
+def test_empty_note_means_finite_limits(tmp_path):
+    """On the sample run, an empty note means the LOD and LOQ are both finite, so every
+    non-finite LOQ carries a code. (A note does not imply non-finite limits:
+    loq_at_lod rows have finite ones.)"""
+    out = tmp_path / "out"
+    out.mkdir()
+    proc = _run({"extra": ["--n_threads", "1"]}, out)
+    assert proc.returncode == 0, proc.stderr
+
+    fom = pd.read_csv(os.path.join(str(out), "figuresofmerit.csv"))
+    empty = fom["notes"].fillna("") == ""
+    finite = np.isfinite(fom["LOD"].astype(float)) & np.isfinite(fom["LOQ"].astype(float))
+    assert empty.any() and (~finite).any(), "the sample run should have both kinds of row"
+    unexplained = fom.loc[empty & ~finite, ["peptide", "LOD", "LOQ", "notes"]]
+    assert unexplained.empty, f"non-finite limits with an empty note:\n{unexplained}"

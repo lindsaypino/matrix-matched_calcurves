@@ -9,6 +9,21 @@ release tag.
 
 ## Unreleased
 
+### Changed — `no_lod` note for peptides with no LOD (matrix-matched_calcurves#38)
+
+A peptide whose fit finds no LOD got `LOQ = inf` and an empty `notes`, so an empty note
+did not mean the limits were finite. It now gets the code `no_lod`. An empty note now
+means a finite LOD and LOQ, and every non-finite LOQ carries a code. The codes are
+exclusive, set in this order: the detection gate, then the LOD, then the LOQ readout.
+
+- **Effect.** Only the `notes` column changes, and only on rows with a non-finite LOD
+  that pass the gate. No figure of merit changes. On the sample data one of 27 peptides
+  (`YGLNQMADEKESLVVK`) changes from an empty note to `no_lod`; the golden file is
+  updated to match.
+- **Published CSVs.** Figures-of-merit tables made before this change have an empty note
+  where this version writes `no_lod`. Re-run, or set `notes` to `no_lod` where it is
+  empty and `LOD` is non-finite: the two give the same result.
+
 ### Added — detection gate (`--min_detections`)
 
 A new `--min_detections` option (default 3) refuses a finite LOD/LOQ for a peptide that
