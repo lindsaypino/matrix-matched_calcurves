@@ -9,6 +9,15 @@ release tag.
 
 ## Unreleased
 
+### Added — `llms.txt` (matrix-matched_calcurves#32)
+
+A short guide at the repository root for LLM agents and other tools, in the
+[llms.txt](https://llmstxt.org) format: the entry point and a minimal command, the input
+formats and the concentration map, the main options and their defaults, the
+`figuresofmerit.csv` columns and `notes` codes, and pitfalls. The README links to it, and
+its OPTIONS list now includes `--min_detections`, which it was missing. Documentation
+only; no code change.
+
 ### Changed — `no_lod` note for peptides with no LOD (matrix-matched_calcurves#38)
 
 A peptide whose fit finds no LOD got `LOQ = inf` and an empty `notes`, so an empty note
