@@ -1,0 +1,80 @@
+# matrix-matched_calcurves
+
+> Command-line tool that calculates the limit of detection (LOD), lower limit of quantitation (LOQ) and upper limit of quantitation (ULOQ) for each peptide in a matrix-matched calibration curve (a dilution series measured by mass spectrometry). It reads a search-engine report plus a map from run filename to concentration, fits a noise + linear (+ saturation) model per peptide, bootstraps the fit to get a CV curve, and writes one row per peptide to `figuresofmerit.csv`.
+
+This file is a short guide for LLM agents and other tools. The README is the full reference. If this file and the code disagree, the code is correct.
+
+## Run it
+
+- Entry point: `bin/calculate-loq.py`. It is a script, not an installed package.
+- Install: Python 3.13 is what CI tests. `python -m pip install -r requirements.txt` (pandas, numpy, lmfit, matplotlib, seaborn, tqdm, pyarrow).
+- Minimal command, on the sample data in the repository (writes to the current directory):
+  `python bin/calculate-loq.py data/one_protein.csv data/filename2samplegroup_map.csv --plot n`
+- `--output_path` must be a folder that already exists. The tool does not create it, and stops with `FileNotFoundError` on `figuresofmerit.csv` if it is missing.
+- `--plot` defaults to `y`, which writes one PNG per peptide. Pass `--plot n` unless the user wants the plots.
+- Run time: on an 8-core machine, roughly 0.8 peptides per second per worker, so a 60,000-peptide report takes hours. A 1.2 GB DIA-NN report took the main process to about 4 GB of memory; run one such job at a time on a 16 GB machine. The 27-peptide sample takes under a minute.
+
+## Inputs
+
+1. `curve_data`: a search-engine report. The format is detected from the header line:
+   - EncyclopeDIA `*.elib.peptides.txt` (has `numFragments`): peptides as rows, runs as columns.
+   - Skyline export, comma-separated (has `Peptide Sequence`, `File Name`, `Total Area Fragment`).
+   - DIA-NN `diann_report.tsv` (has `Stripped.Sequence` and `Precursor.Quantity`): the recommended DIA-NN input.
+   - DIA-NN `*.pr_matrix.tsv` (has `Stripped.Sequence`, no `Precursor.Quantity`): works, but prints a warning; prefer the report.
+   - Spectronaut (has `PEP.StrippedSequence`).
+   Any other header stops the run with "Input filetype not recognized".
+2. `filename_concentration_map`: a CSV with the columns `filename` and `concentration`, one row per run. `filename` must match the run name exactly as the report writes it (the column header in a wide report, the `File Name` / `File.Name` value in a long one). Runs not in the map are ignored. Rows with a blank concentration are skipped with a warning.
+
+Peptide names in the output: EncyclopeDIA and Skyline keep the sequence as written. DIA-NN uses the precursor (`Precursor.Id`, or `Modified.Sequence` + `_` + charge for `pr_matrix`) with colons removed from UniMod tags. Spectronaut uses `SEQUENCE_charge` from `EG.PrecursorId`.
+
+## Main options (defaults)
+
+- `--std_mult 2`: noise SD multiplier for the LOD.
+- `--cv_thresh 0.2`: CV threshold for the LOQ, as a fraction (0.2 = 20%).
+- `--bootreps 100`: bootstrap replicates.
+- `--model auto`: `auto` chooses bilinear or trilinear per peptide by AIC; also `piecewise`, `bilinear`, `trilinear`.
+- `--min_noise_points 2`, `--min_linear_points 1`, `--min_saturation_points 2`: data support needed below the LOD, above the LOD, and in the saturation plateau.
+- `--min_detections 3`: a peptide reported (non-null) at fewer distinct levels gets non-finite limits and the note `below_min_detections`. `0` turns the gate off.
+- `--multiplier_file`: CSV of `peptide,multiplier` for single-point calibration.
+- `--output_path` (default: current directory), `--plot y`, `--verbose n`.
+- `--n_threads` (default: CPU count minus 2): `1` runs serially, which is the way to debug a worker crash; `-1` uses all CPUs.
+
+Results do not depend on `--n_threads`, on row order, or on which other peptides are in the input: each bootstrap replicate has its own seed.
+
+## Output: figuresofmerit.csv
+
+One row per peptide. A peptide whose fit fails still gets a row. Columns:
+
+- `peptide`
+- `LOD`, `LOQ`, `ULOQ`: concentrations, in the units of the map's `concentration` (multiplied by the peptide's multiplier when `--multiplier_file` is given). Non-finite (`inf`) means "not determined", not "very large".
+- `slope_linear`, `intercept_linear`, `intercept_noise`, `stndev_noise`: the fitted model.
+- `n_curvepoints`: distinct concentration levels the peptide was fit over.
+- `notes`: empty when LOD and LOQ are both finite. Otherwise one code (the code is the text before the first colon):
+  - `no_lod`: no LOD was found, so no LOQ can be read.
+  - `loq_no_crossing`: the CV never fell below `--cv_thresh`; no LOQ.
+  - `loq_at_lod`: the CV is already below the threshold at the LOD; LOQ is reported equal to LOD.
+  - `below_min_detections`: reported at fewer than `--min_detections` levels; limits are non-finite.
+  - `no_usable_points`: no finite curve point, for example a peptide missing from `--multiplier_file`.
+  - `fit_underdetermined`, `fit_singular`, `fit_error: <detail>`: the fit failed; the full message is on stderr.
+  For a fit that completes, the code comes from the first step that stops: the detection gate, then the LOD, then the LOQ readout.
+
+`ULOQ` is non-finite for most peptides, because most curves get a bilinear fit (no saturation plateau). Use `n_curvepoints` to tell "no saturation" from "too few levels to test for it".
+
+Rows are written as each peptide finishes, so a stopped run leaves partial results.
+
+## Pitfalls
+
+- `bin/calculate-loq_2021diann.py` is a frozen copy of the 2021 method for benchmarking only. It needs its pinned environment (`requirements-2021.txt` / `Dockerfile.benchmark`), and its LOQs change with the peptide set and order. Do not use it for new analyses.
+- `legacy/` holds retired scripts (`loq_by_cv.py`). They are not maintained or tested.
+- A wrong or partial concentration map gives no error for the unmapped runs; they are silently left out. Check that the map covers every run.
+
+## Docs
+
+- [README](https://github.com/lindsaypino/matrix-matched_calcurves/blob/master/README.md): full description, the formulas for LOD, LOQ and ULOQ, all options.
+- [CHANGELOG](https://github.com/lindsaypino/matrix-matched_calcurves/blob/master/CHANGELOG.md): method and output changes, with their effect on results.
+- [Benchmark notes](https://github.com/lindsaypino/matrix-matched_calcurves/blob/master/doc/BENCHMARK.md): how to compare against the 2021 method.
+
+## Optional
+
+- [Tests](https://github.com/lindsaypino/matrix-matched_calcurves/tree/master/tests): `python -m pytest tests --benchmark-disable` (needs `pytest` and `pytest-benchmark`; about 7 minutes).
+- [legacy/README.md](https://github.com/lindsaypino/matrix-matched_calcurves/blob/master/legacy/README.md): why retired scripts were retired.

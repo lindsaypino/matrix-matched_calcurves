@@ -21,6 +21,9 @@ upper limit of quantitation (ULOQ) is reported in addition to the LOD and
 LOQ; curves that stay linear at the top are fit with the bilinear
 (noise + linear) model and have no ULOQ.
 
+A short guide for LLM agents and other tools, in the [llms.txt](https://llmstxt.org)
+format, is in [`llms.txt`](llms.txt).
+
 
 **INPUT REQUIREMENTS.**
 
@@ -151,6 +154,12 @@ be considered valid'
 'minimum curve points in the high-signal saturation plateau required for the
 `auto` model to adopt a trilinear (noise + linear + saturation) fit and report
 a ULOQ; raise to be more conservative about calling saturation'
+
+- `--min_detections`, default=3, type=int,
+'minimum number of dilution levels a peptide must be actually reported at (a
+real, non-null value, counted before missing cells are zero-filled) for a finite
+LOD/LOQ to be returned; peptides below this are marked `below_min_detections`.
+Set to 0 to disable'
 
 - `--model`, default=`auto`, choices=[`auto`, `piecewise`, `bilinear`, `trilinear`],
 'which curve model to fit: `auto` (default) picks bilinear (noise + linear)
